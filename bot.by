@@ -1,27 +1,27 @@
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Updater, CommandHandler, CallbackContext, MessageHandler, Filters, CallbackQueryHandler
+from telegram.ext import Updater, CommandHandler, CallbackContext, MessageHandler, Filters
 import random
 import string
 import sqlite3
 from datetime import datetime, timedelta
 
-# Bot configuration
+# Bot settings
 BOT_TOKEN = "8034775321:AAHVwntCuBOwDh3NKIPxcs-jGJ9mGq4o0_0"
-ADMIN_IDS = [764559466]
-INVITE_LINK = "https://t.me/+BgsrjW-Y8qtkOTY0"
+BOT_USERNAME = "WelMemBot"
+ADMIN_IDS = [764559466]  # Admin ID
+INVITE_LINK = "https://t.me/+BgsrjW-Y8qtkOTY0"  # Group invite link
 WELCOME_MESSAGE = """
-أهلاً وسهلاً بك، {username}!
-سيتم إنهاء عضويتك بعد 12 شهرًا تلقائيًا.
-يُرجى الالتزام بآداب المجموعة وتجنب المغادرة قبل المدة المحددة، لتجنب إيقاف العضوية.
+Welcome, {username}!
+Your membership will automatically expire after 1 month.
+Please adhere to the group rules and avoid leaving before the specified period to prevent membership suspension.
 """
-DB_FILE = "/home/ec2-user/projects/WelMemBot/invite_codes.db"
+DB_FILE = "/home/ec2-user/projects/WelMemBot/invite_codes.db"  # Full path to database
 
 # Logging setup
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO,
-    filename='/home/ec2-user/projects/WelMemBot/bot.log'
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
@@ -29,8 +29,6 @@ logger = logging.getLogger(__name__)
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    
-    # Fixed SQL syntax here
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS invite_codes (
             code TEXT PRIMARY KEY,
@@ -40,17 +38,15 @@ def init_db():
             expires_at TEXT
         )
     ''')
-    
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS group_settings (
             id INTEGER PRIMARY KEY,
             group_id INTEGER,
-            group_title TEXT
+            group_name TEXT
         )
     ''')
-    
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS user_memberships (
+        CREATE TABLE IF NOT EXISTS members (
             user_id INTEGER PRIMARY KEY,
             username TEXT,
             first_name TEXT,
@@ -59,7 +55,6 @@ def init_db():
             expires_at TEXT
         )
     ''')
-    
     conn.commit()
     conn.close()
 
@@ -67,92 +62,250 @@ init_db()
 
 # Database helper functions
 def save_code(code):
-    expires_at = (datetime.now() + timedelta(days=365)).strftime('%Y-%m-%d %H:%M:%S')
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO invite_codes (code, expires_at) VALUES (?, ?)",
-        (code, expires_at)
-    )
+    expires_at = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d %H:%M:%S')
+    cursor.execute("INSERT INTO invite_codes (code, expires_at) VALUES (?, ?)", (code, expires_at))
     conn.commit()
     conn.close()
 
-def mark_code_used(code, user_id, username, first_name, last_name):
-    joined_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    expires_at = (datetime.now() + timedelta(days=365)).strftime('%Y-%m-%d %H:%M:%S')
-    
+def mark_code_used(code, user_id):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    
-    # Fixed SQL syntax here
+    expires_at = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d %H:%M:%S')
     cursor.execute(
-        "UPDATE invite_codes SET used = 1, used_by = ?, used_at = ? WHERE code = ?",
-        (user_id, joined_at, code)
-    )
-    
-    cursor.execute(
-        """INSERT OR REPLACE INTO user_memberships 
-        (user_id, username, first_name, last_name, joined_at, expires_at) 
-        VALUES (?, ?, ?, ?, ?, ?)""",
-        (user_id, username, first_name, last_name, joined_at, expires_at)
-    )
-    
+        "UPDATE invite_codes SET used = 1, used_by = ?, used_at = datetime('now') WHERE code = ?",
+        (user_id, code)
     conn.commit()
     conn.close()
 
 def is_code_valid(code):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute(
-        "SELECT used, expires_at FROM invite_codes WHERE code = ?",
-        (code,)
-    )
+    cursor.execute("SELECT used FROM invite_codes WHERE code = ?", (code,))
     result = cursor.fetchone()
     conn.close()
-    
-    if not result:
-        return False
-    
-    used, expires_at = result
-    if used == 1:
-        return False
-    
-    if expires_at and datetime.strptime(expires_at, '%Y-%m-%d %H:%M:%S') < datetime.now():
-        return False
-    
-    return True
+    return result and result[0] == 0
 
-# ... [rest of the code remains the same as in the previous version]
+def get_group_info():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT group_id, group_name FROM group_settings WHERE id = 1")
+    result = cursor.fetchone()
+    conn.close()
+    return result if result else (None, None)
+
+def set_group_info(group_id, group_name):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT OR REPLACE INTO group_settings (id, group_id, group_name) VALUES (1, ?, ?)",
+        (group_id, group_name))
+    conn.commit()
+    conn.close()
+
+def add_member(user_id, username, first_name, last_name):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    joined_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    expires_at = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d %H:%M:%S')
+    cursor.execute(
+        "INSERT OR REPLACE INTO members (user_id, username, first_name, last_name, joined_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (user_id, username, first_name, last_name, joined_at, expires_at))
+    conn.commit()
+    conn.close()
+
+# Admin check
+def is_admin(user_id):
+    return user_id in ADMIN_IDS
+
+# Helper functions
+def generate_random_code():
+    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+
+# Bot handlers
+def start(update: Update, context: CallbackContext):
+    if is_admin(update.effective_user.id):
+        keyboard = [
+            [InlineKeyboardButton("Generate Invite Codes", callback_data='generate_codes')],
+            [InlineKeyboardButton("Set Group", callback_data='set_group')],
+            [InlineKeyboardButton("Show Statistics", callback_data='show_stats')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        update.message.reply_text('Admin Panel - Please choose an option:', reply_markup=reply_markup)
+    else:
+        update.message.reply_text('Hello! To join the group, please enter your invite code.')
+
+def admin_command(update: Update, context: CallbackContext):
+    if not is_admin(update.effective_user.id):
+        update.message.reply_text("⛔ Access denied.")
+        return
+    
+    keyboard = [
+        [InlineKeyboardButton("Generate Invite Codes", callback_data='generate_codes')],
+        [InlineKeyboardButton("Set Group", callback_data='set_group')],
+        [InlineKeyboardButton("Show Statistics", callback_data='show_stats')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    update.message.reply_text('Admin Dashboard:', reply_markup=reply_markup)
+
+def set_group(update: Update, context: CallbackContext):
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        query.answer("⛔ Access denied.")
+        return
+    
+    query.answer()
+    query.edit_message_text(text="Please send the group ID and name in this format:\n/group 12345678 GroupName")
+
+def handle_group_id(update: Update, context: CallbackContext):
+    if not is_admin(update.effective_user.id):
+        update.message.reply_text("⛔ Access denied.")
+        return
+    
+    try:
+        parts = update.message.text.split()
+        if len(parts) < 3 or not parts[1].isdigit():
+            update.message.reply_text("Invalid format. Please use: /group 12345678 GroupName")
+            return
+        
+        group_id = int(parts[1])
+        group_name = ' '.join(parts[2:])
+        set_group_info(group_id, group_name)
+        update.message.reply_text(f"Group set successfully!\nID: {group_id}\nName: {group_name}")
+    except Exception as e:
+        update.message.reply_text(f"Error setting group: {str(e)}")
+
+def generate_codes(update: Update, context: CallbackContext):
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        query.answer("⛔ Access denied.")
+        return
+    
+    query.answer()
+    query.edit_message_text(text="How many invite codes would you like to generate? Please send a number.")
+
+def handle_code_count(update: Update, context: CallbackContext):
+    if not is_admin(update.effective_user.id):
+        update.message.reply_text("⛔ Access denied.")
+        return
+    
+    try:
+        count = int(update.message.text)
+        if count <= 0 or count > 100:
+            update.message.reply_text("Please enter a number between 1 and 100.")
+            return
+        
+        codes = []
+        for _ in range(count):
+            code = generate_random_code()
+            save_code(code)
+            codes.append(code)
+        
+        update.message.reply_text(f"✅ Generated {count} invite codes (valid for 30 days):\n\n" + "\n".join(codes))
+    except ValueError:
+        update.message.reply_text("Please enter a valid number.")
+
+def show_stats(update: Update, context: CallbackContext):
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        query.answer("⛔ Access denied.")
+        return
+    
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT COUNT(*) FROM invite_codes")
+    total_codes = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) FROM invite_codes WHERE used = 1")
+    used_codes = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) FROM members")
+    total_members = cursor.fetchone()[0]
+    
+    group_id, group_name = get_group_info()
+    group_info = f"Current group: {group_name} (ID: {group_id})" if group_id else "No group set yet"
+    
+    query.answer()
+    query.edit_message_text(
+        text=f"📊 Bot Statistics:\n\n"
+             f"• Total codes: {total_codes}\n"
+             f"• Used codes: {used_codes}\n"
+             f"• Available codes: {total_codes - used_codes}\n"
+             f"• Total members: {total_members}\n\n"
+             f"{group_info}"
+    )
+    conn.close()
+
+def handle_invite_code(update: Update, context: CallbackContext):
+    user_code = update.message.text.upper().strip()
+    user = update.effective_user
+    
+    if not is_code_valid(user_code):
+        update.message.reply_text("❌ Invalid or already used invite code. Please check and try again.")
+        return
+    
+    group_id, group_name = get_group_info()
+    if not group_id:
+        update.message.reply_text("Group not set yet. Please contact the admin.")
+        return
+    
+    # Mark code as used
+    mark_code_used(user_code, user.id)
+    
+    # Add member to database
+    add_member(
+        user_id=user.id,
+        username=user.username,
+        first_name=user.first_name,
+        last_name=user.last_name
+    )
+    
+    try:
+        # Send success message to user
+        context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"✅ Invite code verified successfully!\n\n"
+                 f"Click the link below to join our group:\n"
+                 f"{INVITE_LINK}\n\n"
+                 f"We look forward to having you with us!"
+        )
+        
+        # Send welcome message to group
+        welcome_msg = WELCOME_MESSAGE.format(
+            username=user.username or user.first_name or "New Member"
+        )
+        context.bot.send_message(
+            chat_id=group_id,
+            text=welcome_msg
+        )
+        
+    except Exception as e:
+        logger.error(f"Error while processing invite code: {e}")
+        update.message.reply_text("An error occurred. Please try again later.")
+
+def error_handler(update: Update, context: CallbackContext):
+    logger.error(f"Update {update} caused error {context.error}")
+    if update.effective_message:
+        update.effective_message.reply_text("An error occurred. Please try again later.")
 
 def main():
     updater = Updater(BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
 
-    # Command handlers
+    # Handlers
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("admin", admin_command))
-    
-    # Message handlers
-    dp.add_handler(MessageHandler(
-        Filters.text & ~Filters.command & ~Filters.chat_type.groups,
-        handle_invite_code
-    ))
-    
-    # Admin handlers
-    dp.add_handler(MessageHandler(
-        Filters.regex(r'^\d+$') & Filters.chat(chat_id=ADMIN_IDS) & ~Filters.command,
-        handle_code_generation
-    ))
-    
-    dp.add_handler(MessageHandler(
-        Filters.forwarded & Filters.chat(chat_id=ADMIN_IDS),
-        handle_group_setting
-    ))
+    dp.add_handler(CommandHandler("group", handle_group_id))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_invite_code))
+    dp.add_handler(MessageHandler(Filters.regex(r'^\d+$') & Filters.chat(chat_id=ADMIN_IDS), handle_code_count))
     
     # Callback handlers
-    dp.add_handler(CallbackQueryHandler(generate_codes_callback, pattern='generate_codes'))
-    dp.add_handler(CallbackQueryHandler(set_group_callback, pattern='set_group'))
-    dp.add_handler(CallbackQueryHandler(show_stats_callback, pattern='show_stats'))
+    from telegram.ext import CallbackQueryHandler
+    dp.add_handler(CallbackQueryHandler(generate_codes, pattern='generate_codes'))
+    dp.add_handler(CallbackQueryHandler(set_group, pattern='set_group'))
+    dp.add_handler(CallbackQueryHandler(show_stats, pattern='show_stats'))
     
     # Error handler
     dp.add_error_handler(error_handler)
