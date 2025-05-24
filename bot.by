@@ -1,0 +1,114 @@
+import logging
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Updater, CommandHandler, CallbackContext, MessageHandler, Filters
+import random
+import string
+import sqlite3
+from config import BOT_TOKEN, ADMIN_IDS, INVITE_LINK, WELCOME_MESSAGE, DB_FILE
+
+# إعدادات التسجيل
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# تهيئة قاعدة البيانات
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS invite_codes (
+            code TEXT PRIMARY KEY,
+            used INTEGER DEFAULT 0,
+            used_by INTEGER,
+            used_at TEXT
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS group_settings (
+            id INTEGER PRIMARY KEY,
+            group_id INTEGER
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# وظائف مساعدة لقاعدة البيانات
+def save_code(code):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO invite_codes (code) VALUES (?)", (code,))
+    conn.commit()
+    conn.close()
+
+def mark_code_used(code, user_id):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE invite_codes SET used = 1, used_by = ?, used_at = datetime('now') WHERE code = ?",
+        (user_id, code)
+    )
+    conn.commit()
+    conn.close()
+
+def is_code_valid(code):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT used FROM invite_codes WHERE code = ?", (code,))
+    result = cursor.fetchone()
+    conn.close()
+    return result and result[0] == 0
+
+def get_group_id():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT group_id FROM group_settings WHERE id = 1")
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else None
+
+def set_group_id(group_id):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT OR REPLACE INTO group_settings (id, group_id) VALUES (1, ?)",
+        (group_id,)
+    )
+    conn.commit()
+    conn.close()
+
+# وظائف البوت
+def generate_random_code():
+    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+
+def start(update: Update, context: CallbackContext):
+    if update.effective_user.id in ADMIN_IDS:
+        keyboard = [
+            [InlineKeyboardButton("توليد رموز دعوة", callback_data='generate_codes')],
+            [InlineKeyboardButton("تعيين مجموعة", callback_data='set_group')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        update.message.reply_text('مرحبًا يا أدمن! اختر أحد الخيارات:', reply_markup=reply_markup)
+    else:
+        update.message.reply_text('مرحبًا! لإتمام الانضمام، الرجاء إدخال رمز الدعوة الذي تلقيته.')
+
+def set_group(update: Update, context: CallbackContext):
+    query = update.callback_query
+    query.answer()
+    query.edit_message_text(text="الرجاء إرسال معرف المجموعة (ID) التي تمت إضافة البوت إليها:")
+
+def handle_group_id(update: Update, context: CallbackContext):
+    try:
+        group_id = int(update.message.text)
+        set_group_id(group_id)
+        update.message.reply_text(f"تم تعيين المجموعة بنجاح! ID: {group_id}")
+    except ValueError:
+        update.message.reply_text("معرف غير صالح. الرجاء إدخال رقم ID صحيح.")
+
+def generate_codes(update: Update, context: CallbackContext):
+    query = update.callback_query
+    query.answer()
+    query.edit_message_text(text="كم عدد رموز الدعوة التي تريد توليدها
