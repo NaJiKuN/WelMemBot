@@ -80,35 +80,163 @@ def set_group_id(group_id):
     conn.commit()
     conn.close()
 
+# وظائف مساعدة للتحقق من الأدمن
+def is_admin(user_id):
+    return user_id in ADMIN_IDS
+
 # وظائف البوت
 def generate_random_code():
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
 
 def start(update: Update, context: CallbackContext):
-    if update.effective_user.id in ADMIN_IDS:
+    if is_admin(update.effective_user.id):
         keyboard = [
-            [InlineKeyboardButton("توليد رموز دعوة", callback_data='generate_codes')],
-            [InlineKeyboardButton("تعيين مجموعة", callback_data='set_group')]
+            [InlineKeyboardButton("Generate Invite Codes", callback_data='generate_codes')],
+            [InlineKeyboardButton("Set Group", callback_data='set_group')]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        update.message.reply_text('مرحبًا يا أدمن! اختر أحد الخيارات:', reply_markup=reply_markup)
+        update.message.reply_text('Admin Panel - Please choose an option:', reply_markup=reply_markup)
     else:
-        update.message.reply_text('مرحبًا! لإتمام الانضمام، الرجاء إدخال رمز الدعوة الذي تلقيته.')
+        update.message.reply_text('Hello! To join the group, please enter your invite code.')
+
+def admin_command(update: Update, context: CallbackContext):
+    if not is_admin(update.effective_user.id):
+        update.message.reply_text("⛔ Access denied.")
+        return
+    
+    keyboard = [
+        [InlineKeyboardButton("Generate Invite Codes", callback_data='generate_codes')],
+        [InlineKeyboardButton("Set Group", callback_data='set_group')],
+        [InlineKeyboardButton("Show Statistics", callback_data='show_stats')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    update.message.reply_text('Admin Dashboard:', reply_markup=reply_markup)
 
 def set_group(update: Update, context: CallbackContext):
     query = update.callback_query
+    if not is_admin(query.from_user.id):
+        query.answer("⛔ Access denied.")
+        return
+    
     query.answer()
-    query.edit_message_text(text="الرجاء إرسال معرف المجموعة (ID) التي تمت إضافة البوت إليها:")
+    query.edit_message_text(text="Please enter the group ID where the bot was added:")
 
 def handle_group_id(update: Update, context: CallbackContext):
+    if not is_admin(update.effective_user.id):
+        update.message.reply_text("⛔ Access denied.")
+        return
+    
     try:
         group_id = int(update.message.text)
         set_group_id(group_id)
-        update.message.reply_text(f"تم تعيين المجموعة بنجاح! ID: {group_id}")
+        update.message.reply_text(f"Group set successfully! ID: {group_id}")
     except ValueError:
-        update.message.reply_text("معرف غير صالح. الرجاء إدخال رقم ID صحيح.")
+        update.message.reply_text("Invalid ID. Please enter a valid group ID.")
 
 def generate_codes(update: Update, context: CallbackContext):
     query = update.callback_query
+    if not is_admin(query.from_user.id):
+        query.answer("⛔ Access denied.")
+        return
+    
     query.answer()
-    query.edit_message_text(text="كم عدد رموز الدعوة التي تريد توليدها
+    query.edit_message_text(text="How many invite codes would you like to generate?")
+
+def handle_code_count(update: Update, context: CallbackContext):
+    if not is_admin(update.effective_user.id):
+        update.message.reply_text("⛔ Access denied.")
+        return
+    
+    try:
+        count = int(update.message.text)
+        if count <= 0:
+            update.message.reply_text("Please enter a number greater than zero.")
+            return
+        
+        codes = []
+        for _ in range(count):
+            code = generate_random_code()
+            save_code(code)
+            codes.append(code)
+        
+        update.message.reply_text(f"Generated {count} invite codes:\n\n" + "\n".join(codes))
+    except ValueError:
+        update.message.reply_text("Please enter a valid number.")
+
+def show_stats(update: Update, context: CallbackContext):
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        query.answer("⛔ Access denied.")
+        return
+    
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT COUNT(*) FROM invite_codes")
+    total_codes = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) FROM invite_codes WHERE used = 1")
+    used_codes = cursor.fetchone()[0]
+    
+    group_id = get_group_id()
+    group_info = f"Current group: {group_id}" if group_id else "No group set yet"
+    
+    query.answer()
+    query.edit_message_text(
+        text=f"📊 Bot Statistics:\n\n"
+             f"• Total codes: {total_codes}\n"
+             f"• Used codes: {used_codes}\n"
+             f"• Available codes: {total_codes - used_codes}\n\n"
+             f"{group_info}"
+    )
+    conn.close()
+
+def handle_invite_code(update: Update, context: CallbackContext):
+    user_code = update.message.text.upper().strip()
+    user = update.effective_user
+    
+    if not is_code_valid(user_code):
+        update.message.reply_text("Invalid or already used invite code. Please check and try again.")
+        return
+    
+    group_id = get_group_id()
+    if not group_id:
+        update.message.reply_text("Group not set yet. Please contact the admin.")
+        return
+    
+    mark_code_used(user_code, user.id)
+    
+    try:
+        context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"✅ Invite code verified successfully!\n\n"
+                 f"Click the link below to join our group:\n"
+                 f"{INVITE_LINK}\n\n"
+                 f"We look forward to having you with us!"
+        )
+        
+        welcome_msg = WELCOME_MESSAGE.format(username=user.username or user.first_name)
+        context.bot.send_message(chat_id=group_id, text=welcome_msg)
+        
+    except Exception as e:
+        logger.error(f"Error while processing invite code: {e}")
+        update.message.reply_text("An error occurred. Please try again later.")
+
+def main():
+    updater = Updater(BOT_TOKEN, use_context=True)
+    dp = updater.dispatcher
+
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("admin", admin_command))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_invite_code))
+    dp.add_handler(MessageHandler(Filters.regex(r'^\d+$') & Filters.chat(chat_id=ADMIN_IDS), handle_code_count))
+    dp.add_handler(MessageHandler(Filters.regex(r'^-?\d+$') & Filters.chat(chat_id=ADMIN_IDS), handle_group_id))
+    
+    from telegram.ext import CallbackQueryHandler
+    dp.add_handler(CallbackQueryHandler(generate_codes, pattern='generate_codes'))
+    dp.add_handler(CallbackQueryHandler(set_group, pattern='set_group'))
+    dp.add_handler(CallbackQueryHandler(show_stats, pattern='show_stats'))
+
+    updater.start_polling()
+    logger.info("Bot is running...")
+    updater.id
