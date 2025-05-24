@@ -4,7 +4,18 @@ from telegram.ext import Updater, CommandHandler, CallbackContext, MessageHandle
 import random
 import string
 import sqlite3
-from config import BOT_TOKEN, ADMIN_IDS, INVITE_LINK, WELCOME_MESSAGE, DB_FILE
+
+# إعدادات البوت (بدون ملف config.py منفصل)
+BOT_TOKEN = "8034775321:AAHVwntCuBOwDh3NKIPxcs-jGJ9mGq4o0_0"
+BOT_USERNAME = "WelMemBot"
+ADMIN_IDS = [764559466]  # أي دي المسؤول الوحيد
+INVITE_LINK = "https://t.me/+BgsrjW-Y8qtkOTY0"  # رابط الدعوة
+WELCOME_MESSAGE = """
+Welcome, {username}!
+Your membership will automatically expire after 1 month.
+Please adhere to the group rules and avoid leaving before the specified period to prevent membership suspension.
+"""
+DB_FILE = "invite_codes.db"  # ملف قاعدة البيانات
 
 # إعدادات التسجيل
 logging.basicConfig(
