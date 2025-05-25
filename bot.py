@@ -1,4 +1,4 @@
-# v3.8
+# x1.5
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import sqlite3
@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 import os
 import logging
 import threading
+import sys
 
 # إعدادات البوت
 TOKEN = '8034775321:AAHVwntCuBOwDh3NKIPxcs-jGJ9mGq4o0_0'
@@ -66,7 +67,7 @@ class DatabaseManager:
                              user_id INTEGER,
                              code TEXT,
                              created_time TEXT, 
-                             expire_time TEXT, 
+                             expire_time INTEGER,  -- تغيير إلى INTEGER لتخزين timestamp
                              used INTEGER DEFAULT 0)''')
                 conn.commit()
             logger.info("تم تهيئة قاعدة البيانات بنجاح")
@@ -99,8 +100,9 @@ class BotPermissions:
             bot_member = bot_instance.get_chat_member(chat_id, bot_instance.get_me().id)
             
             required_permissions = {
-                'can_invite_users': bot_member.can_invite_users,
-                'can_send_messages': bot_member.can_send_messages,
+                'can_invite_users': bot_member.can_invite_users if hasattr(bot_member, 'can_invite_users') else False,
+                'can_send_messages': bot_member.can_send_messages if hasattr(bot_member, 'can_send_messages') else False,
+                'can_restrict_members': bot_member.can_restrict_members if hasattr(bot_member, 'can_restrict_members') else False,
                 'status': bot_member.status
             }
             
@@ -110,9 +112,18 @@ class BotPermissions:
                 logger.warning(f"البوت ليس مشرفًا في المجموعة {chat_id}")
                 return False, "البوت يجب أن يكون مشرفاً في المجموعة"
                 
-            if not bot_member.can_invite_users:
-                logger.warning(f"البوت لا يملك صلاحية إضافة أعضاء في المجموعة {chat_id}")
-                return False, "البوت يحتاج صلاحية إضافة أعضاء"
+            missing_permissions = []
+            if not required_permissions['can_invite_users']:
+                missing_permissions.append("إضافة أعضاء")
+            if not required_permissions['can_send_messages']:
+                missing_permissions.append("إرسال رسائل")
+            if not required_permissions['can_restrict_members']:
+                missing_permissions.append("حظر أعضاء")
+                
+            if missing_permissions:
+                error_msg = f"البوت يحتاج الصلاحيات التالية: {', '.join(missing_permissions)}"
+                logger.warning(error_msg)
+                return False, error_msg
                 
             return True, "الصلاحيات كافية"
             
@@ -122,6 +133,7 @@ class BotPermissions:
                 return False, "المجموعة غير موجودة"
             elif "bot is not a member" in error_msg:
                 return False, "البوت ليس عضواً في المجموعة"
+            logger.error(f"خطأ في API تيليجرام أثناء التحقق من الصلاحيات: {str(e)}")
             return False, f"خطأ في API تيليجرام: {str(e)}"
         except Exception as e:
             logger.error(f"خطأ غير متوقع في التحقق من الصلاحيات: {str(e)}")
@@ -139,7 +151,9 @@ class CodeGenerator:
     def generate_multiple_codes(db_manager, group_id, count):
         """توليد عدة أكواد للمجموعة"""
         codes = []
-        for _ in range(count):
+        attempts = 0
+        max_attempts = count * 2  # لتجنب الحلقات اللانهائية
+        while len(codes) < count and attempts < max_attempts:
             code = CodeGenerator.generate_code()
             try:
                 db_manager.execute_query(
@@ -148,7 +162,10 @@ class CodeGenerator:
                 )
                 codes.append(code)
             except sqlite3.IntegrityError:
-                continue  # إذا كان الكود موجوداً بالفعل، نكرر المحاولة
+                attempts += 1
+                continue
+        if attempts >= max_attempts:
+            logger.warning(f"تجاوز عدد المحاولات لتوليد الأكواد للمجموعة {group_id}")
         return codes
 
 class InviteManager:
@@ -158,7 +175,7 @@ class InviteManager:
         """إنشاء رابط دعوة مؤقت"""
         try:
             # إنشاء رابط صالح لمدة 24 ساعة لشخص واحد
-            expire_date = int((datetime.now() + timedelta(hours=24)).timestamp()
+            expire_date = int(time.time()) + 86400  # 24 ساعة بالثواني
             link = bot_instance.create_chat_invite_link(
                 chat_id=group_id,
                 name=f"Invite_{code}",
@@ -166,9 +183,11 @@ class InviteManager:
                 member_limit=1
             )
             return link.invite_link, expire_date
-        except Exception as e:
+        except telebot.apihelper.ApiTelegramException as e:
             logger.error(f"خطأ في إنشاء رابط الدعوة: {str(e)}")
-            return None, None
+            if "privacy settings" in str(e).lower():
+                return None, None, "يرجى تعطيل إعدادات الخصوصية في @BotFather باستخدام /setprivacy -> Disabled"
+            return None, None, f"خطأ في إنشاء رابط الدعوة: {str(e)}"
     
     @staticmethod
     def store_invite_link(db_manager, link_data):
@@ -227,17 +246,27 @@ class MembershipManager:
             
             group_id = result[0]['group_id']
             
+            # التحقق من أن المستخدم ليس عضوًا بالفعل
+            try:
+                member = bot_instance.get_chat_member(group_id, user_id)
+                if member.status in ['member', 'administrator', 'creator']:
+                    return False, "أنت بالفعل عضو في المجموعة!"
+            except telebot.apihelper.ApiTelegramException as e:
+                if "user not found" not in str(e).lower():
+                    logger.error(f"خطأ في التحقق من حالة العضوية: {str(e)}")
+                    return False, f"خطأ في التحقق من حالة العضوية: {str(e)}"
+            
             # التحقق من صلاحيات البوت
             success, msg = BotPermissions.check_bot_permissions(bot_instance, group_id)
             if not success:
                 return False, msg
             
             # إنشاء رابط الدعوة
-            invite_link, expire_time = InviteManager.create_invite_link(
+            invite_link, expire_time, error_msg = InviteManager.create_invite_link(
                 bot_instance, group_id, user_id, code)
             
             if not invite_link:
-                return False, "فشل في إنشاء رابط الدعوة"
+                return False, error_msg or "فشل في إنشاء رابط الدعوة"
             
             # تخزين معلومات الرابط
             link_data = (
@@ -249,9 +278,8 @@ class MembershipManager:
             
             # تحديث حالة الكود
             db_manager.execute_query(
-                """UPDATE codes SET used = 1, 
-                user_id = ? 
-                WHERE code = ?""",
+                """UPDATE codes SET user_id = ? 
+                WHERE code = ?""",  # لا نحدد used=1 حتى ينضم فعليًا
                 (user_id, code)
             )
             
@@ -265,18 +293,25 @@ class MembershipManager:
     def send_welcome_message(bot_instance, db_manager, chat_id, user_id):
         """إرسال رسالة ترحيبية عند الانضمام"""
         try:
-            username = bot_instance.get_chat(user_id).first_name or f"User_{user_id}"
+            user = bot_instance.get_chat(user_id)
+            username = user.first_name or user.username or f"User_{user_id}"
             welcome_msg = f"""Welcome, {username}!
 Your membership will automatically expire after one month.
 Please adhere to the group rules and avoid leaving before the specified period to prevent membership suspension."""
             
-            # حفظ تاريخ الانضمام
-            db_manager.execute_query(
-                """INSERT OR REPLACE INTO memberships 
-                (user_id, group_id, join_date) 
-                VALUES (?, ?, ?)""",
-                (user_id, chat_id, datetime.now().isoformat())
+            # التحقق مما إذا كان المستخدم مسجلاً بالفعل
+            existing = db_manager.execute_query(
+                "SELECT 1 FROM memberships WHERE user_id = ? AND group_id = ?",
+                (user_id, chat_id),
+                fetch=True
             )
+            if not existing:
+                db_manager.execute_query(
+                    """INSERT INTO memberships 
+                    (user_id, group_id, join_date) 
+                    VALUES (?, ?, ?)""",
+                    (user_id, chat_id, datetime.now().isoformat())
+                )
             
             bot_instance.send_message(chat_id, welcome_msg)
             return True
@@ -288,7 +323,6 @@ Please adhere to the group rules and avoid leaving before the specified period t
     def notify_expired_memberships(bot_instance, db_manager):
         """إرسال إشعارات للأعضاء المنتهية عضويتهم"""
         try:
-            # الأعضاء الذين انتهت عضويتهم ولم يتم إشعار المسؤول بعد
             expired_members = db_manager.execute_query(
                 """SELECT user_id, group_id, join_date 
                 FROM memberships 
@@ -299,7 +333,8 @@ Please adhere to the group rules and avoid leaving before the specified period t
             
             for member in expired_members:
                 try:
-                    username = bot_instance.get_chat(member['user_id']).first_name or f"User_{member['user_id']}"
+                    user = bot_instance.get_chat(member['user_id'])
+                    username = user.first_name or user.username or f"User_{member['user_id']}"
                     bot_instance.send_message(
                         ADMIN_ID,
                         f"تم إنهاء عضوية العضو: {username} (ID: {member['user_id']})\n"
@@ -307,7 +342,6 @@ Please adhere to the group rules and avoid leaving before the specified period t
                         f"تاريخ الانضمام: {member['join_date']}"
                     )
                     
-                    # تحديث حالة الإشعار
                     db_manager.execute_query(
                         """UPDATE memberships 
                         SET notified = 1 
@@ -342,6 +376,7 @@ def start(message):
         bot.reply_to(message, "مرحبًا أيها الأدمن! اختر الإجراء المطلوب:", reply_markup=markup)
     else:
         bot.reply_to(message, "أدخل الكود الخاص بك للانضمام إلى المجموعة:")
+        bot.register_next_step_handler(message, check_code)
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
@@ -359,6 +394,7 @@ def handle_callback(call):
         bot.answer_callback_query(call.id)
     except Exception as e:
         logger.error(f"خطأ في معالجة الأزرار: {str(e)}")
+        bot.answer_callback_query(call.id, "حدث خطأ، يرجى المحاولة لاحقًا")
 
 def get_group_id(message):
     """الحصول على معرف المجموعة من الأدمن"""
@@ -370,16 +406,17 @@ def get_group_id(message):
     logger.info(f"معرف المجموعة المدخل: {group_id}")
     
     try:
-        # التحقق من أن البوت موجود في المجموعة
+        if not group_id.startswith('-100'):
+            bot.reply_to(message, "معرف المجموعة غير صالح! يجب أن يبدأ بـ -100.")
+            return
+            
         chat = bot.get_chat(group_id)
         
-        # التحقق من صلاحيات البوت
         success, msg = BotPermissions.check_bot_permissions(bot, group_id)
         if not success:
             bot.reply_to(message, f"خطأ في الصلاحيات: {msg}")
             return
         
-        # حفظ المجموعة في قاعدة البيانات
         db_manager.execute_query(
             "INSERT OR REPLACE INTO groups (group_id, welcome_message, is_private) VALUES (?, ?, ?)",
             (group_id, "Welcome to the group!", int(chat.type in ['group', 'supergroup']))
@@ -409,7 +446,6 @@ def generate_codes(message, group_id):
             bot.reply_to(message, "حدث خطأ أثناء توليد الأكواد. يرجى المحاولة مرة أخرى.")
             return
             
-        # تنسيق الأكواد لسهولة النسخ
         codes_str = "\n".join([f"`{code}`" for code in codes])
         bot.reply_to(message, 
                     f"تم توليد الأكواد التالية للمجموعة {group_id}:\n{codes_str}\n\n"
@@ -427,7 +463,6 @@ def generate_codes(message, group_id):
 def show_codes_links(message):
     """عرض الأكواد والروابط"""
     try:
-        # الحصول على جميع المجموعات
         groups = db_manager.execute_query(
             "SELECT group_id FROM groups",
             fetch=True
@@ -452,7 +487,6 @@ def show_codes_links(message):
 def show_group_links(message, group_id):
     """عرض روابط وأكواد مجموعة محددة"""
     try:
-        # الأكواد المستخدمة وغير المستخدمة
         used_codes = db_manager.execute_query(
             """SELECT code, user_id, created_at 
             FROM codes 
@@ -471,10 +505,8 @@ def show_group_links(message, group_id):
             fetch=True
         )
         
-        # روابط الدعوة
         invite_links = InviteManager.get_invite_links(db_manager, group_id)
         
-        # بناء الرسالة
         msg = f"معلومات المجموعة {group_id}:\n\n"
         
         msg += "📌 الأكواد غير المستخدمة:\n"
@@ -495,11 +527,12 @@ def show_group_links(message, group_id):
         if invite_links:
             for link in invite_links:
                 status = "🟢 صالح" if datetime.now().timestamp() < link['expire_time'] and not link['used'] else "🔴 منتهي"
+                expire_time = datetime.fromtimestamp(link['expire_time']).strftime('%Y-%m-%d %H:%M:%S')
                 msg += (f"- الرابط: {link['link']}\n"
                        f"  الكود: {link['code']}\n"
                        f"  المستخدم: {link['user_id']}\n"
                        f"  الحالة: {status}\n"
-                       f"  الإنتهاء: {datetime.fromtimestamp(link['expire_time'])}\n\n")
+                       f"  الإنتهاء: {expire_time}\n\n")
         else:
             msg += "لا توجد روابط دعوة"
         
@@ -510,7 +543,7 @@ def show_group_links(message, group_id):
 
 def check_code(message):
     """التحقق من الكود المدخل من المستخدم"""
-    code = message.text.strip().upper()  # تحويل إلى أحرف كبيرة
+    code = message.text.strip().upper()
     user_id = message.from_user.id
     username = message.from_user.first_name or "عضو جديد"
     logger.info(f"الكود المدخل من المستخدم {user_id}: {code}")
@@ -562,6 +595,28 @@ def handle_new_member(update):
             chat_id = update.chat.id
             user_id = update.new_chat_member.user.id
             
+            # التحقق مما إذا كان هناك رابط دعوة مرتبط بالعضو
+            invite_link = getattr(update, 'invite_link', None)
+            if invite_link:
+                result = db_manager.execute_query(
+                    "SELECT code, user_id FROM invite_links WHERE link = ? AND used = 0",
+                    (invite_link.invite_link,),
+                    fetch=True
+                )
+                if result:
+                    code = result[0]['code']
+                    link_user_id = result[0]['user_id']
+                    if link_user_id == user_id:
+                        db_manager.execute_query(
+                            "UPDATE codes SET used = 1 WHERE code = ?",
+                            (code,)
+                        )
+                        db_manager.execute_query(
+                            "UPDATE invite_links SET used = 1 WHERE link = ?",
+                            (invite_link.invite_link,)
+                        )
+                        logger.info(f"تم استخدام الكود {code} ورابط الدعوة بواسطة العضو {user_id}")
+            
             # إرسال رسالة الترحيب
             MembershipManager.send_welcome_message(bot, db_manager, chat_id, user_id)
             
@@ -579,7 +634,7 @@ def check_expired_links_and_memberships():
             # حذف روابط الدعوة المنتهية
             expired_links = db_manager.execute_query(
                 "SELECT link FROM invite_links WHERE expire_time < ? AND used = 0",
-                (now.timestamp(),),
+                (int(now.timestamp()),),
                 fetch=True
             )
             
@@ -588,8 +643,9 @@ def check_expired_links_and_memberships():
                     "UPDATE invite_links SET used = 1 WHERE link = ?",
                     (link['link'],)
                 )
+                logger.info(f"تم تعليم رابط الدعوة {link['link']} كمنتهي")
             
-            # حذف العضويات المنتهية (بعد 30 يومًا)
+            # حذف العضويات المنتهية
             expired_members = db_manager.execute_query(
                 "SELECT user_id, group_id FROM memberships WHERE join_date < ?",
                 ((now - timedelta(days=30)).isoformat(),),
@@ -604,8 +660,15 @@ def check_expired_links_and_memberships():
                         (member['user_id'], member['group_id'])
                     )
                     logger.info(f"تم إزالة العضو المنتهية عضويته {member['user_id']} من المجموعة {member['group_id']}")
-                except Exception as e:
-                    logger.error(f"خطأ في إزالة العضو {member['user_id']}: {str(e)}")
+                except telebot.apihelper.ApiTelegramException as e:
+                    if "user not found" in str(e).lower():
+                        logger.warning(f"العضو {member['user_id']} غير موجود في المجموعة {member['group_id']}")
+                        db_manager.execute_query(
+                            "DELETE FROM memberships WHERE user_id = ? AND group_id = ?",
+                            (member['user_id'], member['group_id'])
+                        )
+                    else:
+                        logger.error(f"خطأ في طرد العضو {member['user_id']}: {str(e)}")
             
             # إرسال إشعارات للأعضاء المنتهية عضويتهم
             MembershipManager.notify_expired_memberships(bot, db_manager)
@@ -624,7 +687,14 @@ if __name__ == '__main__':
         bg_thread.start()
         
         logger.info("جاري تشغيل البوت...")
-        bot.infinity_polling()
+        retry_delay = 5
+        while True:
+            try:
+                bot.infinity_polling()
+            except Exception as e:
+                logger.error(f"خطأ في التشغيل: {str(e)}")
+                time.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 300)  # الحد الأقصى 5 دقائق
     except KeyboardInterrupt:
         logger.info("إيقاف البوت...")
         sys.exit(0)
