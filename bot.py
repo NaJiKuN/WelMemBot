@@ -1,4 +1,4 @@
-# x1.4
+# x1.5
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import sqlite3
@@ -42,12 +42,15 @@ def init_db():
 # التحقق من صلاحيات البوت
 def check_bot_permissions(chat_id):
     try:
+        # التحقق من أن البوت عضو في المجموعة
+        chat = bot.get_chat(chat_id)
         bot_member = bot.get_chat_member(chat_id, bot.get_me().id)
         permissions = {
             'can_invite_users': bot_member.can_invite_users,
             'can_send_messages': bot_member.can_send_messages,
             'can_restrict_members': bot_member.can_restrict_members,
-            'status': bot_member.status
+            'status': bot_member.status,
+            'chat_type': chat.type
         }
         logging.info(f"Bot permissions for chat {chat_id}: {permissions}")
         if bot_member.status not in ['administrator', 'creator']:
@@ -65,7 +68,7 @@ def check_bot_permissions(chat_id):
             return False
         elif "blocked by user" in str(e).lower():
             return False
-        raise  # إعادة إلقاء الاستثناءات الأخرى للتعامل معها لاحقًا
+        return False
     except Exception as e:
         logging.error(f"Unexpected error checking permissions for chat {chat_id}: {str(e)}")
         return False
@@ -78,12 +81,6 @@ def generate_code(length=8):
 # التحقق من إذا كان المستخدم هو الأدمن
 def is_admin(user_id):
     return user_id == ADMIN_ID
-
-# معالج عام لجميع الرسائل
-@bot.message_handler(content_types=['text'])
-def handle_all_messages(message):
-    logging.info(f"Received message from user {message.from_user.id}: {message.text}")
-    bot.reply_to(message, "تم استلام رسالتك. استخدم /start لبدء التفاعل مع البوت أو /check_permissions للتحقق من الصلاحيات.")
 
 # معالجة الأمر /start
 @bot.message_handler(commands=['start'])
@@ -119,7 +116,33 @@ def check_permissions(message):
         bot.reply_to(message, f"خطأ: {str(e)}")
         logging.error(f"Error in /check_permissions for user {message.from_user.id}: {str(e)}")
 
-# الحصول على ID المجموعة من الأدمن
+# أمر اختباري لإضافة عضو يدويًا
+@bot.message_handler(commands=['test_add'])
+def test_add(message):
+    if not is_admin(message.from_user.id):
+        bot.reply_to(message, "غير مصرح لك باستخدام هذا الأمر!")
+        logging.warning(f"Unauthorized access attempt for /test_add by user {message.from_user.id}")
+        return
+    try:
+        group_id = message.text.split()[1]
+        if not check_bot_permissions(group_id):
+            bot.reply_to(message, f"البوت ليس لديه الصلاحيات الكافية في المجموعة {group_id}! تأكد من أن البوت مسؤول ويمكنه إضافة الأعضاء، إرسال الرسائل، وحظر الأعضاء.")
+            logging.warning(f"Insufficient permissions for group {group_id} in /test_add")
+            return
+        bot.add_chat_member(group_id, message.from_user.id)
+        bot.reply_to(message, "تمت الإضافة بنجاح!")
+        logging.info(f"User {message.from_user.id} successfully added to group {group_id} via /test_add")
+    except IndexError:
+        bot.reply_to(message, "يرجى إدخال معرف المجموعة بعد الأمر! مثال: /test_add -1002329495586")
+        logging.warning(f"Missing group_id in /test_add command by user {message.from_user.id}")
+    except telebot.apihelper.ApiTelegramException as e:
+        bot.reply_to(message, f"خطأ في API تيليجرام: {str(e)}")
+        logging.error(f"Telegram API error in /test_add for user {message.from_user.id}: {str(e)}")
+    except Exception as e:
+        bot.reply_to(message, f"خطأ: {str(e)}")
+        logging.error(f"Error in /test_add for user {message.from_user.id}: {str(e)}")
+
+# معالجة إدخال معرف المجموعة
 def get_group_id(message):
     if not is_admin(message.from_user.id):
         bot.reply_to(message, "غير مصرح لك باستخدام هذا الأمر!")
@@ -133,13 +156,14 @@ def get_group_id(message):
             logging.warning(f"Invalid group_id format: {group_id}")
             return
         if not check_bot_permissions(group_id):
-            bot.reply_to(message, f"البوت ليس لديه الصلاحيات الكافية في المجموعة {group_id}! تأكد من أن البوت مسؤول ويمكنه إضافة الأعضاء، إرسال الرسائل، وحظر الأعضاء.")
+            bot.reply_to(message, f"البوت ليس لديه الصلاحيات الكافية في المجموعة {group_id}! تأكد من أن البوت مسؤول ويمكنه إضافة الأعضاء، إرسال الرسائل، وحظر الأعضاء. استخدم /check_permissions {group_id} للتحقق.")
+            logging.warning(f"Permissions check failed for group {group_id}")
             return
         bot.reply_to(message, f"تم تحديد المجموعة {group_id}. أدخل عدد الأكواد المطلوبة:")
         bot.register_next_step_handler(message, lambda m: generate_codes(m, group_id))
     except telebot.apihelper.ApiTelegramException as e:
         if "chat not found" in str(e).lower():
-            bot.reply_to(message, f"خطأ: المجموعة {group_id} غير موجودة أو البوت ليس عضوًا فيها.")
+            bot.reply_to(message, f"خطأ: المجموعة {group_id} غير موجودة أو البوت ليس عضوًا فيها. تأكد من إضافة البوت إلى المجموعة.")
         elif "bot is not a member" in str(e).lower():
             bot.reply_to(message, f"خطأ: البوت ليس عضوًا في المجموعة {group_id}. أضف البوت إلى المجموعة أولاً.")
         else:
@@ -243,31 +267,12 @@ def check_memberships():
             logging.error(f"Error in membership check: {str(e)}")
         time.sleep(86400)  # التحقق كل 24 ساعة
 
-# أمر اختباري لإضافة عضو يدويًا
-@bot.message_handler(commands=['test_add'])
-def test_add(message):
-    if not is_admin(message.from_user.id):
-        bot.reply_to(message, "غير مصرح لك باستخدام هذا الأمر!")
-        logging.warning(f"Unauthorized access attempt for /test_add by user {message.from_user.id}")
-        return
-    try:
-        group_id = message.text.split()[1]
-        if not check_bot_permissions(group_id):
-            bot.reply_to(message, f"البوت ليس لديه الصلاحيات الكافية في المجموعة {group_id}! تأكد من أن البوت مسؤول ويمكنه إضافة الأعضاء، إرسال الرسائل، وحظر الأعضاء.")
-            logging.warning(f"Insufficient permissions for group {group_id} in /test_add")
-            return
-        bot.add_chat_member(group_id, message.from_user.id)
-        bot.reply_to(message, "تمت الإضافة بنجاح!")
-        logging.info(f"User {message.from_user.id} successfully added to group {group_id} via /test_add")
-    except IndexError:
-        bot.reply_to(message, "يرجى إدخال معرف المجموعة بعد الأمر! مثال: /test_add -1002329495586")
-        logging.warning(f"Missing group_id in /test_add command by user {message.from_user.id}")
-    except telebot.apihelper.ApiTelegramException as e:
-        bot.reply_to(message, f"خطأ في API تيليجرام: {str(e)}")
-        logging.error(f"Telegram API error in /test_add for user {message.from_user.id}: {str(e)}")
-    except Exception as e:
-        bot.reply_to(message, f"خطأ: {str(e)}")
-        logging.error(f"Error in /test_add for user {message.from_user.id}: {str(e)}")
+# معالج الرسائل النصية غير الأوامر
+@bot.message_handler(content_types=['text'])
+def handle_text(message):
+    logging.info(f"Received text message from user {message.from_user.id}: {message.text}")
+    # إذا لم يكن هناك معالج متوقع (مثل get_group_id أو check_code)، أعد توجيه المستخدم إلى /start
+    bot.reply_to(message, "يرجى استخدام /start لبدء التفاعل مع البوت.")
 
 # بدء البوت
 if __name__ == '__main__':
