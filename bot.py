@@ -1,7 +1,6 @@
-#!/usr/bin/env python3 v1.1
+#!/usr/bin/env python3 v1.2
 import os
 import logging
-import json
 import random
 import string
 from datetime import datetime, timedelta
@@ -38,19 +37,18 @@ GROUP_LINK, NUM_CODES, USER_CODE = range(3)
 class WelMemBot:
     def __init__(self):
         self.persistence = PicklePersistence(
-            filename='/home/ec2-user/projects/WelMemBot/bot_persistence.pickle',
+            filename='/home/ec2-user/projects/WelMemBot/bot_data.pickle',
             store_chat_data=False,
-            store_user_data=False,
-            single_file=False
+            store_user_data=False
         )
         
         self.updater = Updater(TOKEN, persistence=self.persistence, use_context=True)
         self.dispatcher = self.updater.dispatcher
         
         self._setup_handlers()
-        self._load_legacy_data()
 
     def _setup_handlers(self):
+        # معالجات المحادثة للمسؤول
         conv_handler = ConversationHandler(
             entry_points=[CommandHandler('generate', self.generate_codes)],
             states={
@@ -60,6 +58,7 @@ class WelMemBot:
             fallbacks=[CommandHandler('cancel', self.cancel)],
         )
 
+        # معالجة إدخال الكود من قبل المستخدم
         user_code_handler = ConversationHandler(
             entry_points=[MessageHandler(Filters.text & ~Filters.command, self.user_code)],
             states={
@@ -68,24 +67,12 @@ class WelMemBot:
             fallbacks=[CommandHandler('cancel', self.cancel)],
         )
 
+        # تسجيل المعالجات
         self.dispatcher.add_handler(CommandHandler('start', self.start))
         self.dispatcher.add_handler(CommandHandler('stats', self.stats))
-        self.dispatcher.add_handler(CommandHandler('broadcast', self.broadcast, pass_args=True))
         self.dispatcher.add_handler(conv_handler)
         self.dispatcher.add_handler(user_code_handler)
         self.dispatcher.add_error_handler(self.error_handler)
-
-    def _load_legacy_data(self):
-        legacy_file = '/home/ec2-user/projects/WelMemBot/bot_data.json'
-        if os.path.exists(legacy_file):
-            try:
-                with open(legacy_file, 'r') as f:
-                    legacy_data = json.load(f)
-                    self.persistence.bot_data.update(legacy_data)
-                os.rename(legacy_file, f'{legacy_file}.backup')
-                logger.info("تم تحميل البيانات القديمة بنجاح")
-            except Exception as e:
-                logger.error(f"خطأ في تحميل البيانات القديمة: {e}")
 
     def start(self, update: Update, context: CallbackContext) -> int:
         user = update.effective_user
@@ -109,15 +96,6 @@ class WelMemBot:
             return ConversationHandler.END
         
         update.message.reply_text(
-            "🔗 أرسل رابط الدعوة للمجموعة (لأغراض التسجيل فقط):\n"
-            "أو /cancel للإلغاء"
-        )
-        return GROUP_LINK
-
-    def group_link(self, update: Update, context: CallbackContext) -> int:
-        link = update.message.text.strip()
-        context.user_data['invite_link'] = link
-        update.message.reply_text(
             "🔢 كم عدد أكواد الدعوة التي تريد إنشاءها؟ (1-100)\n"
             "أو /cancel للإلغاء"
         )
@@ -133,14 +111,12 @@ class WelMemBot:
             update.message.reply_text("⚠️ الرجاء إدخال رقم صحيح.")
             return NUM_CODES
         
-        invite_link = context.user_data['invite_link']
         bot_data = context.bot_data
-        
         codes = []
+        
         for _ in range(num):
             code = self._generate_unique_code(bot_data.get('codes', {}))
             bot_data.setdefault('codes', {})[code] = {
-                'invite_link': invite_link,
                 'created_at': datetime.now().isoformat(),
                 'used': False,
                 'group_id': GROUP_ID
@@ -169,35 +145,28 @@ class WelMemBot:
         bot_data = context.bot_data
         user = update.effective_user
         
-        if 'used_codes' in bot_data and code in bot_data['used_codes']:
-            update.message.reply_text("❌ هذا الكود تم استخدامه مسبقًا.")
-            return USER_CODE
-        
+        # التحقق من صحة الكود
         if 'codes' not in bot_data or code not in bot_data['codes']:
-            update.message.reply_text("❌ الكود المدخل خاطئ. حاول إدخال الكود بشكل صحيح.")
+            update.message.reply_text("❌ الكود المدخل غير صحيح.")
             return USER_CODE
         
         code_info = bot_data['codes'][code]
         
+        # التحقق من استخدام الكود مسبقاً
+        if code_info['used']:
+            update.message.reply_text("❌ هذا الكود تم استخدامه مسبقًا.")
+            return USER_CODE
+        
         try:
-            # الخطوة 1: رفع الحظر عن المستخدم (إذا كان محظوراً)
-            try:
-                context.bot.unban_chat_member(
-                    chat_id=code_info['group_id'],
-                    user_id=user.id
-                )
-            except Exception as e:
-                logger.info(f"User {user.id} was not banned: {e}")
-
-            # الخطوة 2: إضافة المستخدم مباشرة إلى المجموعة
-            context.bot.send_message(
-                chat_id=code_info['group_id'],
-                text=f"تمت إضافة العضو {user.mention_markdown()} إلى المجموعة."
+            # إضافة المستخدم مباشرة إلى المجموعة
+            context.bot.unban_chat_member(
+                chat_id=GROUP_ID,
+                user_id=user.id
             )
-
-            # الخطوة 3: منح المستخدم صلاحيات العضوية الكاملة
+            
+            # منح المستخدم صلاحيات العضو العادي
             context.bot.restrict_chat_member(
-                chat_id=code_info['group_id'],
+                chat_id=GROUP_ID,
                 user_id=user.id,
                 permissions=ChatPermissions(
                     can_send_messages=True,
@@ -210,31 +179,33 @@ class WelMemBot:
                     can_pin_messages=False
                 )
             )
-
+            
             # إرسال رسالة ترحيبية في المجموعة
             welcome_message = (
-                f"أهلاً وسهلاً بك، {user.mention_markdown()}!\n\n"
-                "سيتم إنهاء عضويتك بعد شهر تلقائيًا.\n"
-                "يُرجى الالتزام بآداب المجموعة."
+                f"🎉 أهلاً وسهلاً بك، {user.mention_markdown()} في المجموعة!\n\n"
+                "🔹 سيتم إنهاء عضويتك بعد شهر تلقائيًا\n"
+                "🔹 يُرجى الالتزام بقوانين المجموعة"
             )
             
             context.bot.send_message(
-                chat_id=code_info['group_id'],
+                chat_id=GROUP_ID,
                 text=welcome_message,
                 parse_mode='Markdown'
             )
-
-            # تحديث البيانات
-            bot_data.setdefault('used_codes', set()).add(code)
-            bot_data['codes'][code]['used'] = True
-            bot_data['codes'][code]['used_by'] = user.id
-            bot_data['codes'][code]['used_at'] = datetime.now().isoformat()
+            
+            # تحديث حالة الكود
+            code_info['used'] = True
+            code_info['used_by'] = user.id
+            code_info['used_at'] = datetime.now().isoformat()
+            
+            # حفظ بيانات المستخدم
             bot_data.setdefault('users', {})[user.id] = {
                 'first_name': user.first_name,
                 'username': user.username,
                 'joined_at': datetime.now().isoformat(),
                 'expires_at': (datetime.now() + timedelta(days=30)).isoformat()
             }
+            
             context.dispatcher.update_persistence()
             
             update.message.reply_text(
@@ -243,10 +214,9 @@ class WelMemBot:
             )
             
         except Exception as e:
-            logger.error(f"Error adding user to group: {e}", exc_info=True)
+            logger.error(f"خطأ في إضافة المستخدم: {e}", exc_info=True)
             update.message.reply_text(
-                "⚠️ حدث خطأ أثناء محاولة إضافتك إلى المجموعة. يرجى المحاولة لاحقًا.\n"
-                "إذا استمرت المشكلة، يرجى التواصل مع المسؤول."
+                "⚠️ حدث خطأ أثناء إضافتك إلى المجموعة. يرجى المحاولة لاحقًا."
             )
         
         return ConversationHandler.END
@@ -258,52 +228,15 @@ class WelMemBot:
         
         bot_data = context.bot_data
         total_codes = len(bot_data.get('codes', {}))
-        used_codes = len(bot_data.get('used_codes', set()))
-        total_users = len(bot_data.get('users', {}))
+        used_codes = sum(1 for code in bot_data.get('codes', {}).values() if code['used'])
+        active_users = len(bot_data.get('users', {}))
         
         update.message.reply_text(
             f"📊 إحصائيات البوت:\n\n"
-            f"• إجمالي الأكواد: {total_codes}\n"
+            f"• إجمالي الأكواد المولدة: {total_codes}\n"
             f"• الأكواد المستخدمة: {used_codes}\n"
             f"• الأكواد المتاحة: {total_codes - used_codes}\n"
-            f"• الأعضاء المضافين: {total_users}"
-        )
-
-    def broadcast(self, update: Update, context: CallbackContext) -> None:
-        if update.effective_user.id != ADMIN_ID:
-            update.message.reply_text("⛔ عفواً، هذا الأمر للمسؤولين فقط.")
-            return
-        
-        if not context.args:
-            update.message.reply_text("ℹ️ الاستخدام: /broadcast <الرسالة>")
-            return
-        
-        message = ' '.join(context.args)
-        bot_data = context.bot_data
-        users = bot_data.get('users', {})
-        
-        if not users:
-            update.message.reply_text("ℹ️ لا يوجد أعضاء لإرسال الرسالة لهم.")
-            return
-        
-        success = 0
-        failures = 0
-        
-        for user_id, user_data in users.items():
-            try:
-                context.bot.send_message(
-                    chat_id=user_id,
-                    text=f"📢 إشعار من المسؤول:\n\n{message}"
-                )
-                success += 1
-            except Exception as e:
-                logger.error(f"Failed to send message to {user_id}: {e}")
-                failures += 1
-        
-        update.message.reply_text(
-            f"📤 نتائج الإرسال الجماعي:\n"
-            f"• تم الإرسال بنجاح: {success}\n"
-            f"• فشل في الإرسال: {failures}"
+            f"• الأعضاء النشطين: {active_users}"
         )
 
     def cancel(self, update: Update, context: CallbackContext) -> int:
@@ -320,7 +253,7 @@ class WelMemBot:
 
     def run(self):
         self.updater.start_polling(drop_pending_updates=True)
-        logger.info("Bot started and running...")
+        logger.info("تم تشغيل البوت بنجاح...")
         self.updater.idle()
 
 if __name__ == '__main__':
