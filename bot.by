@@ -6,11 +6,11 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, Filters, CallbackQueryHandler
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler
 from telegram.error import TelegramError
 import random
 import string
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import SQLAlchemyError
@@ -69,7 +69,6 @@ def init_db():
     engine = create_engine(DB_URL, connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine)
     # Create indexes for performance
-    from sqlalchemy import text
     with engine.connect() as conn:
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_code ON invite_codes(code)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_user_id ON members(user_id)"))
@@ -138,8 +137,8 @@ async def handle_group_id(update: Update, context):
         # Check if bot has admin permissions
         try:
             bot_member = await context.bot.get_chat_member(group_id, context.bot.id)
-            if not bot_member.can_send_messages:
-                await update.message.reply_text("Error: Bot does not have permission to send messages in this group.")
+            if not bot_member.status in ['administrator', 'creator']:
+                await update.message.reply_text("Error: Bot must be an admin in the group.")
                 return
         except TelegramError as e:
             logger.error(f"Error checking bot permissions for group {group_id}: {str(e)}")
@@ -247,8 +246,9 @@ async def handle_invite_code(update: Update, context):
                 if member.status in ['member', 'administrator', 'creator']:
                     await update.message.reply_text("You are already a member of the group!")
                     return
-            except TelegramError:
-                pass  # User not in group, proceed with code usage
+            except TelegramError as e:
+                if "user not found" not in str(e).lower():
+                    raise
             
             # Mark code as used
             code.used = True
@@ -263,7 +263,6 @@ async def handle_invite_code(update: Update, context):
                 last_name=user.last_name,
                 joined_at=datetime.now(),
                 expires_at=datetime.now() + timedelta(days=30)
-            )
             session.add(member)
             session.commit()
         
@@ -277,9 +276,8 @@ async def handle_invite_code(update: Update, context):
         )
         
         # Send welcome message to group
-        welcome_msg = WELCOME_MESSAGE.format(
-            username=user.username or user.first_name or "New Member"
-        )
+        username = user.username or user.first_name or "New Member"
+        welcome_msg = WELCOME_MESSAGE.format(username=username)
         await context.bot.send_message(
             chat_id=group.group_id,
             text=welcome_msg
@@ -291,11 +289,6 @@ async def handle_invite_code(update: Update, context):
     except SQLAlchemyError as e:
         logger.error(f"Database error processing code {user_code} for user {user.id}: {str(e)}")
         await update.message.reply_text("Database error. Please try again later.")
-
-async def error_handler(update: Update, context):
-    logger.error(f"Update {update} caused error {context.error}")
-    if update and update.effective_message:
-        await update.effective_message.reply_text("An error occurred. Please try again later.")
 
 async def check_expired_members(context):
     try:
@@ -315,6 +308,11 @@ async def check_expired_members(context):
             session.commit()
     except SQLAlchemyError as e:
         logger.error(f"Error checking expired members: {str(e)}")
+
+async def error_handler(update: Update, context):
+    logger.error(f"Update {update} caused error {context.error}")
+    if update and update.effective_message:
+        await update.effective_message.reply_text("An error occurred. Please try again later.")
 
 def shutdown(signum, frame):
     logger.info("Shutting down bot...")
@@ -340,8 +338,8 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_command))
     app.add_handler(CommandHandler("group", handle_group_id))
-    app.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_invite_code))
-    app.add_handler(MessageHandler(Filters.regex(r'^\d+$') & Filters.chat(chat_id=ADMIN_IDS), handle_code_count))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_invite_code))
+    app.add_handler(MessageHandler(filters.Regex(r'^\d+$') & filters.Chat(chat_id=ADMIN_IDS), handle_code_count))
     app.add_handler(CallbackQueryHandler(generate_codes, pattern='generate_codes'))
     app.add_handler(CallbackQueryHandler(set_group, pattern='set_group'))
     app.add_handler(CallbackQueryHandler(show_stats, pattern='show_stats'))
