@@ -1,4 +1,4 @@
-# x1.2
+# x1.3
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import sqlite3
@@ -31,11 +31,13 @@ def init_db():
 def check_bot_permissions(chat_id):
     try:
         bot_member = bot.get_chat_member(chat_id, bot.get_me().id)
-        if not bot_member.can_invite_users or not bot_member.can_send_messages:
+        print(f"Bot permissions for chat {chat_id}: can_invite_users={bot_member.can_invite_users}, can_send_messages={bot_member.can_send_messages}, can_restrict_members={bot_member.can_restrict_members}")
+        if not bot_member.can_invite_users or not bot_member.can_send_messages or not bot_member.can_restrict_members:
+            print(f"Insufficient permissions: can_invite_users={bot_member.can_invite_users}, can_send_messages={bot_member.can_send_messages}, can_restrict_members={bot_member.can_restrict_members}")
             return False
         return True
     except Exception as e:
-        print(f"Error checking permissions: {e}")
+        print(f"Error checking permissions for chat {chat_id}: {str(e)}")
         return False
 
 # توليد كود عشوائي
@@ -69,12 +71,12 @@ def get_group_id(message):
             bot.reply_to(message, "ID المجموعة غير صالح! يجب أن يبدأ بـ -100.")
             return
         if not check_bot_permissions(group_id):
-            bot.reply_to(message, "البوت ليس لديه الصلاحيات الكافية في المجموعة! تأكد من أن البوت يمكنه إضافة الأعضاء وإرسال الرسائل.")
+            bot.reply_to(message, "البوت ليس لديه الصلاحيات الكافية في المجموعة! تأكد من أن البوت يمكنه إضافة الأعضاء، إرسال الرسائل، وحظر الأعضاء.")
             return
         bot.reply_to(message, f"تم تحديد المجموعة {group_id}. أدخل عدد الأكواد المطلوبة:")
         bot.register_next_step_handler(message, lambda m: generate_codes(m, group_id))
     except Exception as e:
-        bot.reply_to(message, f"خطأ: {e}. تأكد من إدخال ID المجموعة بشكل صحيح.")
+        bot.reply_to(message, f"خطأ: {str(e)}. تأكد من إدخال ID المجموعة بشكل صحيح.")
 
 # توليد الأكواد
 def generate_codes(message, group_id):
@@ -100,7 +102,7 @@ def generate_codes(message, group_id):
     except ValueError:
         bot.reply_to(message, "يرجى إدخال رقم صحيح!")
     except Exception as e:
-        bot.reply_to(message, f"خطأ: {e}")
+        bot.reply_to(message, f"خطأ: {str(e)}")
 
 # التحقق من الكود المدخل من المستخدم
 def check_code(message):
@@ -115,7 +117,7 @@ def check_code(message):
         group_id = result[0]
         try:
             if not check_bot_permissions(group_id):
-                bot.reply_to(message, "البوت ليس لديه الصلاحيات الكافية في المجموعة!")
+                bot.reply_to(message, "البوت ليس لديه الصلاحيات الكافية في المجموعة! تأكد من أن البوت يمكنه إضافة الأعضاء، إرسال الرسائل، وحظر الأعضاء.")
                 return
             bot.add_chat_member(group_id, user_id)
             c.execute("UPDATE codes SET used = 1 WHERE code = ?", (code,))
@@ -130,7 +132,7 @@ def check_code(message):
             bot.send_message(group_id, welcome_message)
             bot.reply_to(message, "تمت إضافتك إلى المجموعة بنجاح!")
         except Exception as e:
-            bot.reply_to(message, f"خطأ: {e}")
+            bot.reply_to(message, f"خطأ: {str(e)}")
     else:
         bot.reply_to(message, "The entered code is invalid. Please try entering the code correctly.")
     conn.close()
@@ -149,12 +151,30 @@ def check_memberships():
                     bot.kick_chat_member(group_id, user_id)
                     c.execute("DELETE FROM memberships WHERE user_id = ? AND group_id = ?", (user_id, group_id))
                 except Exception as e:
-                    print(f"Error kicking user {user_id} from group {group_id}: {e}")
+                    print(f"Error kicking user {user_id} from group {group_id}: {str(e)}")
             conn.commit()
             conn.close()
         except Exception as e:
-            print(f"Error in membership check: {e}")
+            print(f"Error in membership check: {str(e)}")
         time.sleep(86400)  # التحقق كل 24 ساعة
+
+# أمر اختباري لإضافة عضو يدويًا
+@bot.message_handler(commands=['test_add'])
+def test_add(message):
+    if not is_admin(message.from_user.id):
+        bot.reply_to(message, "غير مصرح لك باستخدام هذا الأمر!")
+        return
+    try:
+        group_id = message.text.split()[1]
+        if not check_bot_permissions(group_id):
+            bot.reply_to(message, "البوت ليس لديه الصلاحيات الكافية في المجموعة! تأكد من أن البوت يمكنه إضافة الأعضاء، إرسال الرسائل، وحظر الأعضاء.")
+            return
+        bot.add_chat_member(group_id, message.from_user.id)
+        bot.reply_to(message, "تمت الإضافة بنجاح!")
+    except IndexError:
+        bot.reply_to(message, "يرجى إدخال معرف المجموعة بعد الأمر! مثال: /test_add -1002329495586")
+    except Exception as e:
+        bot.reply_to(message, f"خطأ: {str(e)}")
 
 # بدء البوت
 if __name__ == '__main__':
