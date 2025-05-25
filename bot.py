@@ -1,4 +1,4 @@
-#v3.3
+# v3.5
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import sqlite3
@@ -35,12 +35,33 @@ class DatabaseManager:
         try:
             with sqlite3.connect(self.db_path) as conn:
                 c = conn.cursor()
+                # جدول الأكواد
                 c.execute('''CREATE TABLE IF NOT EXISTS codes
-                            (code TEXT PRIMARY KEY, group_id TEXT, used INTEGER DEFAULT 0)''')
+                            (code TEXT PRIMARY KEY, 
+                             group_id TEXT, 
+                             used INTEGER DEFAULT 0,
+                             user_id INTEGER DEFAULT NULL,
+                             expire_time TEXT DEFAULT NULL)''')
+                # جدول العضويات
                 c.execute('''CREATE TABLE IF NOT EXISTS memberships
-                            (user_id INTEGER, group_id TEXT, join_date TEXT, PRIMARY KEY (user_id, group_id))''')
+                            (user_id INTEGER, 
+                             group_id TEXT, 
+                             join_date TEXT, 
+                             PRIMARY KEY (user_id, group_id))''')
+                # جدول المجموعات
                 c.execute('''CREATE TABLE IF NOT EXISTS groups
-                            (group_id TEXT PRIMARY KEY, welcome_message TEXT, is_private INTEGER DEFAULT 0)''')
+                            (group_id TEXT PRIMARY KEY, 
+                             welcome_message TEXT, 
+                             is_private INTEGER DEFAULT 0)''')
+                # جدول روابط الدعوة
+                c.execute('''CREATE TABLE IF NOT EXISTS invite_links
+                            (link TEXT PRIMARY KEY, 
+                             group_id TEXT, 
+                             user_id INTEGER,
+                             code TEXT,
+                             created_time TEXT, 
+                             expire_time TEXT, 
+                             used INTEGER DEFAULT 0)''')
                 conn.commit()
             logging.info("Database initialized successfully.")
         except Exception as e:
@@ -66,27 +87,42 @@ class BotPermissions:
         """التحقق من صلاحيات البوت في المجموعة"""
         try:
             chat = bot_instance.get_chat(chat_id)
+            bot_member = bot_instance.get_chat_member(chat_id, bot_instance.get_me().id)
             
-            # إذا كانت المجموعة خاصة، لا نحتاج لتحقق مشددة من الصلاحيات
-            if chat.type in ['group', 'supergroup']:
-                try:
-                    bot_member = bot_instance.get_chat_member(chat_id, bot_instance.get_me().id)
-                    return bot_member.can_invite_users if hasattr(bot_member, 'can_invite_users') else True
-                except:
-                    return True
+            required_permissions = {
+                'can_invite_users': bot_member.can_invite_users,
+                'can_send_messages': bot_member.can_send_messages,
+                'status': bot_member.status
+            }
             
-            return True
+            logging.info(f"Bot permissions for chat {chat_id}: {required_permissions}")
             
+            if bot_member.status not in ['administrator', 'creator']:
+                logging.warning(f"Bot is not an admin in chat {chat_id}")
+                return False, "Bot needs to be admin with invite permissions"
+                
+            if not bot_member.can_invite_users:
+                logging.warning(f"Bot can't invite users in chat {chat_id}")
+                return False, "Bot needs invite users permission"
+                
+            return True, "Permissions OK"
+            
+        except telebot.apihelper.ApiTelegramException as e:
+            error_msg = str(e).lower()
+            if any(msg in error_msg for msg in ["chat not found", "bot is not a member", "blocked by user"]):
+                logging.error(f"Bot access issue for chat {chat_id}: {error_msg}")
+                return False, "Bot is not a member of this group"
+            return False, f"Telegram API error: {str(e)}"
         except Exception as e:
-            logging.error(f"Error checking permissions: {str(e)}")
-            return False
+            logging.error(f"Unexpected error checking permissions: {str(e)}")
+            return False, f"Unexpected error: {str(e)}"
 
 class CodeGenerator:
     """فئة لتوليد وإدارة الأكواد"""
     @staticmethod
     def generate_code(length=8):
         """توليد كود عشوائي"""
-        characters = string.ascii_letters + string.digits
+        characters = string.ascii_uppercase + string.digits  # أحرف كبيرة وأرقام فقط
         return ''.join(random.choice(characters) for _ in range(length))
     
     @staticmethod
@@ -102,77 +138,102 @@ class CodeGenerator:
             codes.append(code)
         return codes
 
+class InviteManager:
+    """فئة لإدارة روابط الدعوة"""
+    @staticmethod
+    def create_invite_link(bot_instance, group_id, user_id, code):
+        """إنشاء رابط دعوة مؤقت"""
+        try:
+            # إنشاء رابط صالح لمدة 24 ساعة لشخص واحد
+            expire_date = int((datetime.now() + timedelta(hours=24)).timestamp()
+            link = bot_instance.create_chat_invite_link(
+                chat_id=group_id,
+                name=f"Invite_{code}",
+                expire_date=expire_date,
+                member_limit=1
+            )
+            return link.invite_link, expire_date
+        except Exception as e:
+            logging.error(f"Error creating invite link: {str(e)}")
+            return None, None
+    
+    @staticmethod
+    def store_invite_link(db_manager, link_data):
+        """تخزين رابط الدعوة في قاعدة البيانات"""
+        try:
+            db_manager.execute_query(
+                """INSERT INTO invite_links 
+                (link, group_id, user_id, code, created_time, expire_time) 
+                VALUES (?, ?, ?, ?, ?, ?)""",
+                link_data
+            )
+            return True
+        except Exception as e:
+            logging.error(f"Error storing invite link: {str(e)}")
+            return False
+
 class MembershipManager:
     """فئة لإدارة العضويات"""
     @staticmethod
-    def add_member(bot_instance, db_manager, user_id, group_id, code):
-        """إضافة عضو جديد إلى المجموعة"""
+    def process_code(bot_instance, db_manager, user_id, code):
+        """معالجة الكود وإرسال رابط الدعوة"""
         try:
+            # التحقق من صحة الكود
+            result = db_manager.execute_query(
+                """SELECT group_id FROM codes 
+                WHERE code = ? AND used = 0""",
+                (code,),
+                fetch=True
+            )
+            
+            if not result:
+                return False, "Invalid or used code"
+            
+            group_id = result[0][0]
+            
             # التحقق من صلاحيات البوت
-            if not BotPermissions.check_bot_permissions(bot_instance, group_id):
-                return False, "البوت ليس لديه الصلاحيات الكافية في المجموعة"
+            success, msg = BotPermissions.check_bot_permissions(bot_instance, group_id)
+            if not success:
+                return False, msg
             
-            # محاولة إضافة العضو بعدة طرق
-            try:
-                # 1. محاولة الحصول على رابط الدعوة
-                chat = bot_instance.get_chat(group_id)
-                if chat.invite_link:
-                    bot_instance.send_message(user_id, f"انضم للمجموعة من خلال الرابط: {chat.invite_link}")
-                    success = True
-                else:
-                    # 2. محاولة رفع الحظر إذا كان موجودًا
-                    try:
-                        bot_instance.unban_chat_member(group_id, user_id)
-                        success = True
-                    except:
-                        success = False
-                    
-                    # 3. إرسال طلب إضافة يدوية للمشرفين
-                    try:
-                        user_info = bot_instance.get_chat(user_id)
-                        username = f"@{user_info.username}" if user_info.username else f"المستخدم (ID: {user_id})"
-                        bot_instance.send_message(
-                            group_id,
-                            f"الرجاء إضافة {username} إلى المجموعة. كود الانضمام: {code}"
-                        )
-                        success = True
-                    except:
-                        success = False
-                
-                if not success:
-                    return False, "لا يمكن إضافتك تلقائيًا. يرجى التواصل مع المسؤول."
-                
-            except Exception as e:
-                logging.error(f"Error adding member: {str(e)}")
-                return False, "حدث خطأ أثناء محاولة إضافتك للمجموعة"
+            # إنشاء رابط الدعوة
+            invite_link, expire_time = InviteManager.create_invite_link(
+                bot_instance, group_id, user_id, code)
             
-            # تحديث قاعدة البيانات
-            db_manager.execute_query(
-                "UPDATE codes SET used = 1 WHERE code = ?", 
-                (code,)
+            if not invite_link:
+                return False, "Failed to create invite link"
+            
+            # تخزين معلومات الرابط
+            link_data = (
+                invite_link, group_id, user_id, code,
+                datetime.now().isoformat(), expire_time
             )
+            if not InviteManager.store_invite_link(db_manager, link_data):
+                return False, "Failed to save invite link"
+            
+            # تحديث حالة الكود
             db_manager.execute_query(
-                "INSERT INTO memberships (user_id, group_id, join_date) VALUES (?, ?, ?)",
-                (user_id, group_id, datetime.now().isoformat())
+                """UPDATE codes SET used = 1, 
+                user_id = ?, expire_time = ? 
+                WHERE code = ?""",
+                (user_id, expire_time, code)
             )
             
-            # إرسال رسالة الترحيب
+            # إرسال رسالة الترحيب للمجموعة عند استخدام الرابط
             welcome_msg = MembershipManager.get_welcome_message(db_manager, group_id)
-            try:
-                bot_instance.send_message(group_id, welcome_msg)
-            except:
-                logging.warning(f"Couldn't send welcome message to group {group_id}")
+            username = bot_instance.get_chat(user_id).first_name
+            bot.send_message(
+                group_id,
+                f"Welcome, {username}!\n"
+                "Your membership will automatically expire after one month.\n"
+                "Please adhere to the group rules and avoid leaving before the specified period to prevent membership suspension."
+            )
             
-            return True, "تمت إضافتك إلى المجموعة بنجاح!"
+            return True, invite_link
             
-        except telebot.apihelper.ApiTelegramException as e:
-            error_msg = f"خطأ في API تيليجرام: {str(e)}"
-            logging.error(error_msg)
-            return False, error_msg
         except Exception as e:
-            error_msg = f"خطأ: {str(e)}"
-            logging.error(error_msg)
-            return False, error_msg
+            logging.error(f"Error in process_code: {str(e)}")
+            return False, f"Error: {str(e)}"
     
     @staticmethod
     def get_welcome_message(db_manager, group_id):
@@ -182,11 +243,7 @@ class MembershipManager:
             (group_id,),
             fetch=True
         )
-        
-        if result and result[0][0]:
-            return result[0][0]
-        else:
-            return f"مرحبًا بك في المجموعة! يرجى الالتزام بالقواعد."
+        return result[0][0] if result and result[0][0] else "Welcome to the group!"
 
 # تهيئة مدير قاعدة البيانات
 db_manager = DatabaseManager(DB_PATH)
@@ -210,8 +267,7 @@ def start(message):
 def get_group_id_command(message):
     """الحصول على معرف المجموعة"""
     if message.chat.type in ['group', 'supergroup']:
-        bot.reply_to(message, f"معرف هذه المجموعة هو: {message.chat.id}\n"
-                             f"يمكنك استخدامه لإعداد البوت.")
+        bot.reply_to(message, f"معرف هذه المجموعة هو: {message.chat.id}\nيمكنك استخدامه لإعداد البوت.")
     else:
         bot.reply_to(message, "هذا الأمر يعمل فقط داخل المجموعات.")
 
@@ -225,35 +281,24 @@ def get_group_id(message):
     logging.info(f"Admin entered group_id: {group_id}")
     
     try:
-        # محاولة الحصول على معلومات المجموعة للتحقق من وجودها
-        chat = bot.get_chat(group_id)
-        
-        # تحديد نوع المجموعة
-        is_private = chat.type in ['group', 'supergroup']
-        
-        if not BotPermissions.check_bot_permissions(bot, group_id):
-            bot.reply_to(message, "البوت ليس لديه الصلاحيات الكافية في المجموعة! تأكد من:")
-            bot.reply_to(message, "1. أن البوت عضو في المجموعة\n"
-                                "2. أن لديه صلاحية إضافة أعضاء\n"
-                                "3. إذا كانت المجموعة خاصة، قد تحتاج إلى إرسال دعوة للبوت")
+        # التحقق من صلاحيات البوت
+        success, msg = BotPermissions.check_bot_permissions(bot, group_id)
+        if not success:
+            bot.reply_to(message, f"خطأ في الصلاحيات: {msg}")
             return
         
         # حفظ المجموعة في قاعدة البيانات
+        chat = bot.get_chat(group_id)
         db_manager.execute_query(
             "INSERT OR REPLACE INTO groups (group_id, welcome_message, is_private) VALUES (?, ?, ?)",
-            (group_id, "مرحبًا بك في مجموعتنا! يرجى قراءة القواعد.", int(is_private))
+            (group_id, "Welcome to the group!", int(chat.type in ['group', 'supergroup']))
         )
         
         bot.reply_to(message, f"تم تحديد المجموعة {chat.title} (ID: {group_id}). أدخل عدد الأكواد المطلوبة:")
         bot.register_next_step_handler(message, lambda m: generate_codes(m, group_id))
         
-    except telebot.apihelper.ApiTelegramException as e:
-        bot.reply_to(message, f"خطأ: {str(e)}\nتأكد من:\n"
-                             f"1. أن البوت عضو في المجموعة\n"
-                             f"2. أنك أدخلت المعرف بشكل صحيح\n"
-                             f"3. يمكنك الحصول على معرف المجموعة بإرسال /id داخل المجموعة")
     except Exception as e:
-        bot.reply_to(message, f"خطأ غير متوقع: {str(e)}")
+        bot.reply_to(message, f"خطأ: {str(e)}")
         logging.error(f"Error in get_group_id: {str(e)}")
 
 def generate_codes(message, group_id):
@@ -270,8 +315,7 @@ def generate_codes(message, group_id):
         
         codes = CodeGenerator.generate_multiple_codes(db_manager, group_id, num_codes)
         codes_str = "\n".join([f"🎟 الكود: {code}" for code in codes])
-        bot.reply_to(message, f"تم توليد الأكواد التالية:\n{codes_str}\n\n"
-                             f"يمكنك مشاركة هذه الأكواد مع الأعضاء للانضمام إلى المجموعة.")
+        bot.reply_to(message, f"تم توليد الأكواد التالية:\n{codes_str}\n\nيمكنك مشاركة هذه الأكواد مع الأعضاء للانضمام إلى المجموعة.")
         logging.info(f"Generated {num_codes} codes for group {group_id}")
         
     except ValueError:
@@ -282,28 +326,17 @@ def generate_codes(message, group_id):
 
 def check_code(message):
     """التحقق من الكود المدخل من المستخدم"""
-    code = message.text.strip()
+    code = message.text.strip().upper()  # تحويل إلى أحرف كبيرة
     user_id = message.from_user.id
     username = message.from_user.first_name
     logging.info(f"User {user_id} entered code: {code}")
     
-    result = db_manager.execute_query(
-        "SELECT group_id FROM codes WHERE code = ? AND used = 0",
-        (code,),
-        fetch=True
-    )
-    
-    if not result:
-        bot.reply_to(message, "الكود غير صالح أو مستخدم من قبل! يرجى التأكد من الكود والمحاولة مرة أخرى.")
-        return
-    
-    group_id = result[0][0]
-    success, msg = MembershipManager.add_member(bot, db_manager, user_id, group_id, code)
+    success, result = MembershipManager.process_code(bot, db_manager, user_id, code)
     
     if success:
-        bot.reply_to(message, f"مرحبًا {username}!\n{msg}")
+        bot.reply_to(message, f"مرحبًا {username}!\n\nرابط الانضمام إلى المجموعة (صالح لمدة 24 ساعة):\n{result}\n\nسيتم إنهاء عضويتك بعد شهر تلقائيًا.")
     else:
-        bot.reply_to(message, f"عذرًا {username}!\n{msg}\nيرجى التواصل مع المسؤول للمساعدة.")
+        bot.reply_to(message, f"عذرًا {username}!\n{result}\nيرجى المحاولة لاحقًا أو التواصل مع المسؤول.")
 
 @bot.message_handler(commands=['set_welcome'])
 def set_welcome(message):
@@ -313,66 +346,78 @@ def set_welcome(message):
         return
     
     try:
-        # إذا تم إرسال الأمر داخل المجموعة
         if message.chat.type in ['group', 'supergroup']:
             group_id = str(message.chat.id)
             welcome_msg = message.text.split(maxsplit=1)[1] if len(message.text.split()) > 1 else ""
         else:
-            # إذا تم إرسال الأمر في محادثة خاصة مع معرف المجموعة
-            _, group_id, *welcome_parts = message.text.split(maxsplit=2)
-            welcome_msg = welcome_parts[0] if welcome_parts else ""
+            parts = message.text.split(maxsplit=2)
+            if len(parts) < 3:
+                bot.reply_to(message, "يرجى إدخال معرف المجموعة ورسالة الترحيب! مثال: /set_welcome -1002329495586 Welcome!")
+                return
+            group_id, welcome_msg = parts[1], parts[2]
         
         db_manager.execute_query(
             "INSERT OR REPLACE INTO groups (group_id, welcome_message) VALUES (?, ?)",
             (group_id, welcome_msg)
         )
-        
         bot.reply_to(message, f"تم تحديث رسالة الترحيب للمجموعة {group_id}!")
+        logging.info(f"Updated welcome message for group {group_id}")
     except Exception as e:
-        bot.reply_to(message, f"خطأ: {str(e)}\nاستخدم:\n"
-                             f"- داخل المجموعة: /set_welcome <رسالة الترحيب>\n"
-                             f"- خارج المجموعة: /set_welcome <group_id> <رسالة الترحيب>")
+        bot.reply_to(message, f"خطأ: {str(e)}\nاستخدم:\n- داخل المجموعة: /set_welcome <رسالة الترحيب>\n- خارج المجموعة: /set_welcome <group_id> <رسالة الترحيب>")
+        logging.error(f"Error in /set_welcome: {str(e)}")
 
 # ===== الوظائف الخلفية =====
 
-def check_expired_memberships():
-    """فحص العضويات المنتهية الصلاحية"""
+def check_expired_links_and_memberships():
+    """فحص الروابط والعضويات المنتهية الصلاحية"""
     while True:
         try:
-            expired = db_manager.execute_query(
+            # حذف روابط الدعوة المنتهية
+            expired_links = db_manager.execute_query(
+                "SELECT link FROM invite_links WHERE expire_time < ? AND used = 0",
+                (datetime.now().timestamp(),),
+                fetch=True
+            )
+            
+            for (link,) in expired_links:
+                db_manager.execute_query(
+                    "UPDATE invite_links SET used = 1 WHERE link = ?",
+                    (link,)
+                )
+            
+            # حذف العضويات المنتهية (بعد 30 يومًا)
+            expired_members = db_manager.execute_query(
                 "SELECT user_id, group_id FROM memberships WHERE join_date < ?",
                 ((datetime.now() - timedelta(days=30)).isoformat(),),
                 fetch=True
             )
             
-            for user_id, group_id in expired:
+            for user_id, group_id in expired_members:
                 try:
-                    # محاولة طرد العضو المنتهية صلاحيته
                     bot.kick_chat_member(group_id, user_id)
                     db_manager.execute_query(
                         "DELETE FROM memberships WHERE user_id = ? AND group_id = ?",
                         (user_id, group_id)
                     )
-                    logging.info(f"User {user_id} removed from group {group_id}")
+                    logging.info(f"Removed expired member {user_id} from group {group_id}")
                 except Exception as e:
-                    logging.error(f"Error removing user {user_id}: {str(e)}")
+                    logging.error(f"Error removing member {user_id}: {str(e)}")
             
-            time.sleep(86400)  # التحقق كل 24 ساعة
+            time.sleep(3600)  # التحقق كل ساعة
             
         except Exception as e:
-            logging.error(f"Error in membership check: {str(e)}")
-            time.sleep(3600)  # إعادة المحاولة بعد ساعة في حالة الخطأ
+            logging.error(f"Error in background check: {str(e)}")
+            time.sleep(3600)
 
 # بدء البوت
 if __name__ == '__main__':
     try:
-        # بدء فحص العضويات المنتهية في خيط منفصل
+        # بدء الوظائف الخلفية في خيط منفصل
         import threading
-        threading.Thread(target=check_expired_memberships, daemon=True).start()
+        threading.Thread(target=check_expired_links_and_memberships, daemon=True).start()
         
         logging.info("Starting bot polling...")
         bot.polling(none_stop=True, interval=1, timeout=20)
-        
     except Exception as e:
-        logging.error(f"Fatal error: {str(e)}")
+        logging.error(f"Fatal error in polling: {str(e)}")
         time.sleep(10)
