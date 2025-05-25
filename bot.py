@@ -1,144 +1,244 @@
-# x1.0
-import json
-import uuid
-import os
-from telegram import Update
+# v2.9
+import logging
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application,
+    Updater,
     CommandHandler,
     MessageHandler,
-    filters,
-    ContextTypes,
+    Filters,
+    CallbackContext,
     ConversationHandler,
 )
-from telegram.error import TelegramError
+import json
+import os
+import random
+import string
+from datetime import datetime, timedelta
 
-# إعدادات البوت
-TOKEN = "8034775321:AAHVwntCuBOwDh3NKIPxcs-jGJ9mGq4o0_0"
+# تهيئة السجل
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# الثوابت
+TOKEN = '8034775321:AAHVwntCuBOwDh3NKIPxcs-jGJ9mGq4o0_0'
+GROUP_ID = -1002329495586
 ADMIN_ID = 764559466
-GROUP_ID = "-1002329495586"
-DATA_FILE = "/home/ec2-user/projects/WelMemBot/codes.json"
+DATA_FILE = '/home/ec2-user/projects/WelMemBot/data.json'
 
 # حالات المحادثة
-ASK_GROUP_ID, ASK_CODE_COUNT, ASK_CODE = range(3)
+GROUP_ID_INPUT, NUM_CODES_INPUT = range(2)
 
-# تحميل الأكواد من ملف JSON
-def load_codes():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r") as f:
-            return json.load(f)
-    return {}
+class WelMemBot:
+    def __init__(self):
+        self.load_data()
 
-# حفظ الأكواد إلى ملف JSON
-def save_codes(codes):
-    with open(DATA_FILE, "w") as f:
-        json.dump(codes, f, indent=4)
-
-# أمر البدء
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Please enter the invitation code:")
-    return ASK_CODE
-
-# التحقق من الكود وإضافة المستخدم
-async def check_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_code = update.message.text
-    codes = load_codes()
-
-    if user_code in codes and not codes[user_code]["used"]:
-        group_id = codes[user_code]["group_id"]
-        user_id = update.message.from_user.id
-        username = update.message.from_user.username or update.message.from_user.first_name
-
+    def load_data(self):
+        """تحميل البيانات من ملف JSON"""
         try:
-            # إضافة المستخدم إلى المجموعة
-            await context.bot.add_chat_member(chat_id=group_id, user_id=user_id)
-            # إرسال رسالة ترحيبية
-            welcome_message = (
-                f"Welcome, {username}!\n"
-                "Your membership will automatically expire after one month.\n"
-                "Please adhere to the group rules and avoid leaving before the specified period to prevent membership suspension."
+            with open(DATA_FILE, 'r') as f:
+                self.data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            self.data = {
+                'group_id': GROUP_ID,
+                'codes': {},
+                'used_codes': set()
+            }
+            self.save_data()
+
+    def save_data(self):
+        """حفظ البيانات إلى ملف JSON"""
+        with open(DATA_FILE, 'w') as f:
+            json.dump(self.data, f, indent=4)
+
+    def generate_code(self, length=8):
+        """توليد كود عشوائي"""
+        characters = string.ascii_letters + string.digits
+        return ''.join(random.choice(characters) for _ in range(length))
+
+    def start(self, update: Update, context: CallbackContext) -> None:
+        """معالجة أمر /start"""
+        user_id = update.effective_user.id
+        
+        if user_id == ADMIN_ID:
+            update.message.reply_text(
+                "مرحباً يا مسؤول!\n"
+                "لإنشاء أكواد دعوة، استخدم الأمر /generate\n"
+                "لعرض الأكواد الحالية، استخدم الأمر /list_codes"
             )
-            await context.bot.send_message(chat_id=group_id, text=welcome_message)
-            # تحديث حالة الكود إلى مستخدم
-            codes[user_code]["used"] = True
-            save_codes(codes)
-            await update.message.reply_text("You have been added to the group successfully!")
-        except TelegramError as e:
-            await update.message.reply_text(f"Error adding you to the group: {str(e)}")
-    else:
-        await update.message.reply_text("The entered code is incorrect. Please try entering the code correctly.")
-    
-    return ConversationHandler.END
+        else:
+            update.message.reply_text(
+                "مرحباً! الرجاء إدخال كود الدعوة الخاص بك للانضمام إلى المجموعة."
+            )
 
-# أمر توليد الأكواد (للمسؤول فقط)
-async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id != ADMIN_ID:
-        await update.message.reply_text("You are not authorized to use this command.")
+    def generate_codes(self, update: Update, context: CallbackContext) -> int:
+        """بدء عملية إنشاء الأكواد"""
+        user_id = update.effective_user.id
+        if user_id != ADMIN_ID:
+            update.message.reply_text("ليس لديك صلاحية الوصول إلى هذا الأمر.")
+            return ConversationHandler.END
+
+        update.message.reply_text(
+            "الرجاء إدخال معرف المجموعة (Group ID) التي تريد إنشاء الأكواد لها:\n"
+            "مثال: -1002329495586"
+        )
+        return GROUP_ID_INPUT
+
+    def get_group_id(self, update: Update, context: CallbackContext) -> int:
+        """الحصول على معرف المجموعة من المسؤول"""
+        try:
+            group_id = int(update.message.text)
+            context.user_data['group_id'] = group_id
+            update.message.reply_text(
+                f"تم تعيين معرف المجموعة إلى {group_id}.\n"
+                "الرجاء إدخال عدد الأكواد التي تريد إنشاءها:"
+            )
+            return NUM_CODES_INPUT
+        except ValueError:
+            update.message.reply_text("معرف المجموعة غير صالح. الرجاء إدخال رقم صحيح.")
+            return GROUP_ID_INPUT
+
+    def get_num_codes(self, update: Update, context: CallbackContext) -> int:
+        """الحصول على عدد الأكواد من المسؤول وإنشاؤها"""
+        try:
+            num_codes = int(update.message.text)
+            if num_codes <= 0:
+                raise ValueError
+
+            group_id = context.user_data['group_id']
+            codes = []
+
+            for _ in range(num_codes):
+                code = self.generate_code()
+                self.data['codes'][code] = {
+                    'group_id': group_id,
+                    'used': False,
+                    'created_at': datetime.now().isoformat()
+                }
+                codes.append(code)
+
+            self.save_data()
+
+            update.message.reply_text(
+                f"تم إنشاء {num_codes} كود للمجموعة {group_id}:\n\n" +
+                "\n".join(codes) +
+                "\n\nسيتم إبطال كل كود بعد استخدامه مرة واحدة."
+            )
+            return ConversationHandler.END
+        except ValueError:
+            update.message.reply_text("الرجاء إدخال رقم صحيح موجب.")
+            return NUM_CODES_INPUT
+
+    def list_codes(self, update: Update, context: CallbackContext) -> None:
+        """عرض جميع الأكواد الحالية"""
+        user_id = update.effective_user.id
+        if user_id != ADMIN_ID:
+            update.message.reply_text("ليس لديك صلاحية الوصول إلى هذا الأمر.")
+            return
+
+        if not self.data['codes']:
+            update.message.reply_text("لا توجد أكواد حالياً.")
+            return
+
+        active_codes = []
+        used_codes = []
+
+        for code, details in self.data['codes'].items():
+            if details['used']:
+                used_codes.append(code)
+            else:
+                active_codes.append(code)
+
+        message = "الأكواد النشطة:\n"
+        message += "\n".join(active_codes) if active_codes else "لا توجد أكواد نشطة.\n"
+        message += "\n\nالأكواد المستخدمة:\n"
+        message += "\n".join(used_codes) if used_codes else "لا توجد أكواد مستخدمة."
+
+        update.message.reply_text(message)
+
+    def handle_code(self, update: Update, context: CallbackContext) -> None:
+        """معالجة كود الدعوة من المستخدم"""
+        user = update.effective_user
+        code = update.message.text.strip()
+
+        if code in self.data['codes'] and not self.data['codes'][code]['used']:
+            # الكود صالح
+            group_id = self.data['codes'][code]['group_id']
+            self.data['codes'][code]['used'] = True
+            self.data['used_codes'].add(code)
+            self.save_data()
+
+            try:
+                # إضافة المستخدم إلى المجموعة
+                context.bot.send_message(
+                    chat_id=group_id,
+                    text=f"تمت إضافة {user.mention_markdown()} إلى المجموعة باستخدام كود الدعوة."
+                )
+                
+                # إرسال رسالة الترحيب
+                welcome_message = (
+                    f"أهلاً وسهلاً بك، {user.mention_markdown()}!\n"
+                    "سيتم إنهاء عضويتك بعد شهر تلقائيًا.\n"
+                    "يُرجى الالتزام بآداب المجموعة وتجنب المغادرة قبل المدة المحددة، لتجنب إيقاف العضوية."
+                )
+                context.bot.send_message(chat_id=group_id, text=welcome_message, parse_mode='Markdown')
+
+                update.message.reply_text(
+                    "تمت إضافتك إلى المجموعة بنجاح! تحقق من رسائل المجموعة للترحيب بك."
+                )
+            except Exception as e:
+                logger.error(f"Error adding user to group: {e}")
+                update.message.reply_text(
+                    "حدث خطأ أثناء إضافتك إلى المجموعة. الرجاء المحاولة لاحقاً."
+                )
+        else:
+            update.message.reply_text("The entered code is incorrect. Please try entering the code correctly.")
+
+    def cancel(self, update: Update, context: CallbackContext) -> int:
+        """إلغاء المحادثة"""
+        update.message.reply_text('تم الإلغاء.')
         return ConversationHandler.END
 
-    await update.message.reply_text("Please enter the group ID (e.g., -1002329495586):")
-    return ASK_GROUP_ID
+    def error_handler(self, update: Update, context: CallbackContext) -> None:
+        """معالجة الأخطاء"""
+        logger.error(msg="حدث خطأ في البوت:", exc_info=context.error)
+        
+        if update.effective_message:
+            update.effective_message.reply_text(
+                "حدث خطأ غير متوقع. الرجاء المحاولة مرة أخرى لاحقاً."
+            )
 
-# استقبال GROUP_ID
-async def receive_group_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["group_id"] = update.message.text
-    await update.message.reply_text("How many codes do you want to generate?")
-    return ASK_CODE_COUNT
+def main() -> None:
+    """تشغيل البوت"""
+    bot = WelMemBot()
+    updater = Updater(TOKEN)
+    dispatcher = updater.dispatcher
 
-# استقبال عدد الأكواد وتوليدها
-async def receive_code_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        count = int(update.message.text)
-        if count <= 0:
-            await update.message.reply_text("Please enter a valid number greater than 0.")
-            return ASK_CODE_COUNT
+    # معالج الأوامر
+    dispatcher.add_handler(CommandHandler("start", bot.start))
+    dispatcher.add_handler(CommandHandler("list_codes", bot.list_codes))
 
-        group_id = context.user_data.get("group_id", GROUP_ID)
-        codes = load_codes()
-
-        # توليد الأكواد
-        new_codes = []
-        for _ in range(count):
-            code = str(uuid.uuid4())[:8]  # توليد كود قصير فريد
-            codes[code] = {"group_id": group_id, "used": False}
-            new_codes.append(code)
-
-        save_codes(codes)
-        await update.message.reply_text(f"Generated codes:\n{', '.join(new_codes)}")
-        return ConversationHandler.END
-    except ValueError:
-        await update.message.reply_text("Please enter a valid number.")
-        return ASK_CODE_COUNT
-
-# إلغاء المحادثة
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Operation cancelled.")
-    return ConversationHandler.END
-
-def main():
-    # إنشاء التطبيق
-    application = Application.builder().token(TOKEN).build()
-
-    # إعداد ConversationHandler
+    # معالج المحادثة لإنشاء الأكواد
     conv_handler = ConversationHandler(
-        entry_points=[
-            CommandHandler("start", start),
-            CommandHandler("generate", generate),
-        ],
+        entry_points=[CommandHandler('generate', bot.generate_codes)],
         states={
-            ASK_GROUP_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_group_id)],
-            ASK_CODE_COUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_code_count)],
-            ASK_CODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, check_code)],
+            GROUP_ID_INPUT: [MessageHandler(Filters.text & ~Filters.command, bot.get_group_id)],
+            NUM_CODES_INPUT: [MessageHandler(Filters.text & ~Filters.command, bot.get_num_codes)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[CommandHandler('cancel', bot.cancel)],
     )
+    dispatcher.add_handler(conv_handler)
 
-    # إضافة المعالج
-    application.add_handler(conv_handler)
+    # معالج رسائل الأكواد
+    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, bot.handle_code))
 
-    # تشغيل البوت
-    print("Bot is running...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    # معالج الأخطاء
+    dispatcher.add_error_handler(bot.error_handler)
 
-if __name__ == "__main__":
+    # بدء البوت
+    updater.start_polling()
+    updater.idle()
+
+if __name__ == '__main__':
     main()
