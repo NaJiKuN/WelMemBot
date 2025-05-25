@@ -1,4 +1,4 @@
-# x1.5
+# x1.6
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import sqlite3
@@ -67,7 +67,7 @@ class DatabaseManager:
                              user_id INTEGER,
                              code TEXT,
                              created_time TEXT, 
-                             expire_time INTEGER,  -- تغيير إلى INTEGER لتخزين timestamp
+                             expire_time INTEGER,
                              used INTEGER DEFAULT 0)''')
                 conn.commit()
             logger.info("تم تهيئة قاعدة البيانات بنجاح")
@@ -101,7 +101,6 @@ class BotPermissions:
             
             required_permissions = {
                 'can_invite_users': bot_member.can_invite_users if hasattr(bot_member, 'can_invite_users') else False,
-                'can_send_messages': bot_member.can_send_messages if hasattr(bot_member, 'can_send_messages') else False,
                 'can_restrict_members': bot_member.can_restrict_members if hasattr(bot_member, 'can_restrict_members') else False,
                 'status': bot_member.status
             }
@@ -115,8 +114,6 @@ class BotPermissions:
             missing_permissions = []
             if not required_permissions['can_invite_users']:
                 missing_permissions.append("إضافة أعضاء")
-            if not required_permissions['can_send_messages']:
-                missing_permissions.append("إرسال رسائل")
             if not required_permissions['can_restrict_members']:
                 missing_permissions.append("حظر أعضاء")
                 
@@ -152,7 +149,7 @@ class CodeGenerator:
         """توليد عدة أكواد للمجموعة"""
         codes = []
         attempts = 0
-        max_attempts = count * 2  # لتجنب الحلقات اللانهائية
+        max_attempts = count * 2
         while len(codes) < count and attempts < max_attempts:
             code = CodeGenerator.generate_code()
             try:
@@ -174,8 +171,7 @@ class InviteManager:
     def create_invite_link(bot_instance, group_id, user_id, code):
         """إنشاء رابط دعوة مؤقت"""
         try:
-            # إنشاء رابط صالح لمدة 24 ساعة لشخص واحد
-            expire_date = int(time.time()) + 86400  # 24 ساعة بالثواني
+            expire_date = int(time.time()) + 86400
             link = bot_instance.create_chat_invite_link(
                 chat_id=group_id,
                 name=f"Invite_{code}",
@@ -233,7 +229,6 @@ class MembershipManager:
     def process_code(bot_instance, db_manager, user_id, code):
         """معالجة الكود وإرسال رابط الدعوة"""
         try:
-            # التحقق من صحة الكود
             result = db_manager.execute_query(
                 """SELECT group_id FROM codes 
                 WHERE code = ? AND used = 0""",
@@ -246,7 +241,6 @@ class MembershipManager:
             
             group_id = result[0]['group_id']
             
-            # التحقق من أن المستخدم ليس عضوًا بالفعل
             try:
                 member = bot_instance.get_chat_member(group_id, user_id)
                 if member.status in ['member', 'administrator', 'creator']:
@@ -256,19 +250,16 @@ class MembershipManager:
                     logger.error(f"خطأ في التحقق من حالة العضوية: {str(e)}")
                     return False, f"خطأ في التحقق من حالة العضوية: {str(e)}"
             
-            # التحقق من صلاحيات البوت
             success, msg = BotPermissions.check_bot_permissions(bot_instance, group_id)
             if not success:
                 return False, msg
             
-            # إنشاء رابط الدعوة
             invite_link, expire_time, error_msg = InviteManager.create_invite_link(
                 bot_instance, group_id, user_id, code)
             
             if not invite_link:
                 return False, error_msg or "فشل في إنشاء رابط الدعوة"
             
-            # تخزين معلومات الرابط
             link_data = (
                 invite_link, group_id, user_id, code,
                 datetime.now().isoformat(), expire_time
@@ -276,10 +267,9 @@ class MembershipManager:
             if not InviteManager.store_invite_link(db_manager, link_data):
                 return False, "فشل في حفظ رابط الدعوة"
             
-            # تحديث حالة الكود
             db_manager.execute_query(
                 """UPDATE codes SET user_id = ? 
-                WHERE code = ?""",  # لا نحدد used=1 حتى ينضم فعليًا
+                WHERE code = ?""",
                 (user_id, code)
             )
             
@@ -299,7 +289,6 @@ class MembershipManager:
 Your membership will automatically expire after one month.
 Please adhere to the group rules and avoid leaving before the specified period to prevent membership suspension."""
             
-            # التحقق مما إذا كان المستخدم مسجلاً بالفعل
             existing = db_manager.execute_query(
                 "SELECT 1 FROM memberships WHERE user_id = ? AND group_id = ?",
                 (user_id, chat_id),
@@ -313,7 +302,13 @@ Please adhere to the group rules and avoid leaving before the specified period t
                     (user_id, chat_id, datetime.now().isoformat())
                 )
             
-            bot_instance.send_message(chat_id, welcome_msg)
+            try:
+                bot_instance.send_message(chat_id, welcome_msg)
+            except telebot.apihelper.ApiTelegramException as e:
+                if "can't send messages" in str(e).lower():
+                    bot_instance.send_message(ADMIN_ID, f"لا يمكنني إرسال رسائل في المجموعة {chat_id}. رسالة الترحيب لـ {username}:\n{welcome_msg}")
+                else:
+                    raise e
             return True
         except Exception as e:
             logger.error(f"خطأ في إرسال رسالة الترحيب: {str(e)}")
@@ -595,7 +590,6 @@ def handle_new_member(update):
             chat_id = update.chat.id
             user_id = update.new_chat_member.user.id
             
-            # التحقق مما إذا كان هناك رابط دعوة مرتبط بالعضو
             invite_link = getattr(update, 'invite_link', None)
             if invite_link:
                 result = db_manager.execute_query(
@@ -617,7 +611,6 @@ def handle_new_member(update):
                         )
                         logger.info(f"تم استخدام الكود {code} ورابط الدعوة بواسطة العضو {user_id}")
             
-            # إرسال رسالة الترحيب
             MembershipManager.send_welcome_message(bot, db_manager, chat_id, user_id)
             
     except Exception as e:
@@ -631,7 +624,6 @@ def check_expired_links_and_memberships():
         try:
             now = datetime.now()
             
-            # حذف روابط الدعوة المنتهية
             expired_links = db_manager.execute_query(
                 "SELECT link FROM invite_links WHERE expire_time < ? AND used = 0",
                 (int(now.timestamp()),),
@@ -645,7 +637,6 @@ def check_expired_links_and_memberships():
                 )
                 logger.info(f"تم تعليم رابط الدعوة {link['link']} كمنتهي")
             
-            # حذف العضويات المنتهية
             expired_members = db_manager.execute_query(
                 "SELECT user_id, group_id FROM memberships WHERE join_date < ?",
                 ((now - timedelta(days=30)).isoformat(),),
@@ -670,10 +661,9 @@ def check_expired_links_and_memberships():
                     else:
                         logger.error(f"خطأ في طرد العضو {member['user_id']}: {str(e)}")
             
-            # إرسال إشعارات للأعضاء المنتهية عضويتهم
             MembershipManager.notify_expired_memberships(bot, db_manager)
             
-            time.sleep(3600)  # التحقق كل ساعة
+            time.sleep(3600)
             
         except Exception as e:
             logger.error(f"خطأ في الفحص الخلفي: {str(e)}")
@@ -682,7 +672,6 @@ def check_expired_links_and_memberships():
 # بدء البوت
 if __name__ == '__main__':
     try:
-        # بدء الوظائف الخلفية في خيط منفصل
         bg_thread = threading.Thread(target=check_expired_links_and_memberships, daemon=True)
         bg_thread.start()
         
@@ -694,7 +683,7 @@ if __name__ == '__main__':
             except Exception as e:
                 logger.error(f"خطأ في التشغيل: {str(e)}")
                 time.sleep(retry_delay)
-                retry_delay = min(retry_delay * 2, 300)  # الحد الأقصى 5 دقائق
+                retry_delay = min(retry_delay * 2, 300)
     except KeyboardInterrupt:
         logger.info("إيقاف البوت...")
         sys.exit(0)
