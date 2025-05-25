@@ -1,4 +1,4 @@
-#v2.6
+#v2.7
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -25,7 +25,6 @@ logger = logging.getLogger(__name__)
 
 # بيانات البوت
 TOKEN = '8034775321:AAHVwntCuBOwDh3NKIPxcs-jGJ9mGq4o0_0'
-GROUP_ID = -1002329495586
 ADMIN_ID = 764559466
 
 # حالات المحادثة
@@ -53,7 +52,6 @@ async def check_bot_permissions(context: CallbackContext, chat_id: int) -> bool:
         chat = await context.bot.get_chat(chat_id)
         bot_member = await chat.get_member(context.bot.id)
         
-        # التحقق من الصلاحيات المطلوبة
         if not bot_member.can_invite_users:
             logger.error(f"البوت لا يملك صلاحية إضافة أعضاء في المجموعة {chat_id}")
             return False
@@ -66,7 +64,7 @@ async def check_bot_permissions(context: CallbackContext, chat_id: int) -> bool:
         logger.error(f"خطأ في التحقق من صلاحيات البوت: {e}")
         return False
 
-async def start(update: Update, context: CallbackContext) -> None:
+async def start_command(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     if user_id == ADMIN_ID:
         await update.message.reply_text(
@@ -84,7 +82,7 @@ async def start(update: Update, context: CallbackContext) -> None:
         )
         return GET_USER_CODE
 
-async def button_callback(update: Update, context: CallbackContext) -> None:
+async def button_handler(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
     
@@ -102,12 +100,12 @@ async def button_callback(update: Update, context: CallbackContext) -> None:
             for code, details in active_codes.items():
                 message += f"- الكود: {code} (للمجموعة: {details['group_id']})\n"
             await query.edit_message_text(message)
+        return ConversationHandler.END
 
-async def get_group_id(update: Update, context: CallbackContext) -> int:
+async def get_group_id(update: Update, context: CallbackContext):
     try:
         group_id = int(update.message.text)
         
-        # التحقق من صلاحيات البوت في المجموعة
         if not await check_bot_permissions(context, group_id):
             await update.message.reply_text(
                 "البوت لا يملك الصلاحيات الكافية في هذه المجموعة.\n"
@@ -125,7 +123,7 @@ async def get_group_id(update: Update, context: CallbackContext) -> int:
         await update.message.reply_text("الرجاء إدخال رقم صحيح لـ ID المجموعة.")
         return GET_GROUP_ID
 
-async def get_num_codes(update: Update, context: CallbackContext) -> int:
+async def get_num_codes(update: Update, context: CallbackContext):
     try:
         num_codes = int(update.message.text)
         if num_codes <= 0:
@@ -154,7 +152,7 @@ async def get_num_codes(update: Update, context: CallbackContext) -> int:
         await update.message.reply_text("الرجاء إدخال رقم صحيح.")
         return GET_NUM_CODES
 
-async def get_user_code(update: Update, context: CallbackContext) -> int:
+async def get_user_code(update: Update, context: CallbackContext):
     user_code = update.message.text.strip().upper()
     data = load_data()
     
@@ -166,7 +164,6 @@ async def get_user_code(update: Update, context: CallbackContext) -> int:
         group_id = data['codes'][user_code]['group_id']
         user = update.effective_user
         
-        # التحقق من صلاحيات البوت قبل الإضافة
         if not await check_bot_permissions(context, group_id):
             await update.message.reply_text(
                 "عذراً، لا يمكن إضافتك حالياً بسبب مشكلة في صلاحيات البوت.\n"
@@ -175,13 +172,11 @@ async def get_user_code(update: Update, context: CallbackContext) -> int:
             return GET_USER_CODE
         
         try:
-            # إضافة المستخدم إلى المجموعة
             await context.bot.add_chat_member(
                 chat_id=group_id,
                 user_id=user.id,
             )
             
-            # وضع الكود كـ مستخدم
             data['used_codes'][user_code] = {
                 'user_id': user.id,
                 'username': user.username or user.first_name,
@@ -190,7 +185,6 @@ async def get_user_code(update: Update, context: CallbackContext) -> int:
             }
             save_data(data)
             
-            # إرسال رسالة ترحيبية في المجموعة
             welcome_message = (
                 f"أهلاً وسهلاً بك، {user.username or user.first_name}!\n"
                 "سيتم إنهاء عضويتك بعد شهر تلقائيًا.\n"
@@ -212,7 +206,7 @@ async def get_user_code(update: Update, context: CallbackContext) -> int:
     
     return ConversationHandler.END
 
-async def show_codes_command(update: Update, context: CallbackContext) -> None:
+async def show_codes_command(update: Update, context: CallbackContext):
     data = load_data()
     active_codes = {k: v for k, v in data['codes'].items() if k not in data['used_codes']}
     
@@ -224,46 +218,46 @@ async def show_codes_command(update: Update, context: CallbackContext) -> None:
             message += f"- الكود: {code} (للمجموعة: {details['group_id']})\n"
         await update.message.reply_text(message)
 
-async def cancel(update: Update, context: CallbackContext) -> int:
+async def cancel_command(update: Update, context: CallbackContext):
     await update.message.reply_text('تم إلغاء العملية.')
     return ConversationHandler.END
 
-async def error_handler(update: Update, context: CallbackContext) -> None:
+async def error_handler(update: Update, context: CallbackContext):
     logger.error(msg="حدث خطأ في البوت:", exc_info=context.error)
     if update.effective_message:
         await update.effective_message.reply_text('حدث خطأ غير متوقع. الرجاء المحاولة لاحقاً.')
 
-def main() -> None:
-    # إنشاء التطبيق وإضافة المعالجات
+def main():
     application = Application.builder().token(TOKEN).build()
+
+    # معالجات الأوامر الأساسية
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("show_codes", show_codes_command))
+    application.add_handler(CommandHandler("cancel", cancel_command))
 
     # معالج المحادثة للمسؤول
     admin_conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+        entry_points=[CallbackQueryHandler(button_handler, pattern='^(generate_codes|show_codes)$')],
         states={
             GET_GROUP_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_group_id)],
             GET_NUM_CODES: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_num_codes)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[CommandHandler("cancel", cancel_command)],
     )
 
     # معالج المحادثة للمستخدم العادي
     user_conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, start)],
+        entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, start_command)],
         states={
             GET_USER_CODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_user_code)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[CommandHandler("cancel", cancel_command)],
     )
 
-    # إضافة جميع المعالجات
     application.add_handler(admin_conv_handler)
     application.add_handler(user_conv_handler)
-    application.add_handler(CommandHandler("show_codes", show_codes_command))
-    application.add_handler(CallbackQueryHandler(button_callback))
     application.add_error_handler(error_handler)
 
-    # بدء البوت
     application.run_polling()
 
 if __name__ == '__main__':
