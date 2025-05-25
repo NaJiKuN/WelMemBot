@@ -1,4 +1,4 @@
-# v2.1
+# v2.2
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -57,7 +57,9 @@ class WelMemBot:
             update.message.reply_text(
                 "مرحبًا يا مسؤول! 👋\n"
                 "استخدم /generate لإنشاء أكواد دعوة جديدة.\n"
-                "استخدم /stats لعرض إحصائيات الأكواد."
+                "استخدم /stats لعرض إحصائيات الأكواد.\n"
+                "استخدم /used_codes لعرض الأكواد المستخدمة.\n"
+                "استخدم /unused_codes لعرض الأكواد غير المستخدمة."
             )
         else:
             update.message.reply_text(
@@ -115,7 +117,7 @@ class WelMemBot:
                 # إرسال الأكواد للمسؤول
                 update.message.reply_text(
                     f"تم إنشاء {num_codes} كود دعوة للمجموعة {group_id}:\n\n" +
-                    "\n".join(codes) +
+                    "\n".join([f"• {code}" for code in codes]) +
                     "\n\nسيتمكن المستخدمون من استخدام هذه الأكواد لمرة واحدة للانضمام إلى المجموعة."
                 )
                 return ConversationHandler.END
@@ -158,6 +160,7 @@ class WelMemBot:
                 # تحديث حالة الكود
                 self.data['codes'][code]['used'] = True
                 self.data['codes'][code]['used_by'] = user.id
+                self.data['codes'][code]['used_by_name'] = user.full_name
                 self.data['codes'][code]['used_at'] = datetime.now().isoformat()
                 self.data['used_codes'].add(code)
                 self.save_data()
@@ -211,6 +214,59 @@ class WelMemBot:
             f"• الأكواد المتاحة: {available_codes}"
         )
     
+    def used_codes(self, update: Update, context: CallbackContext) -> None:
+        """عرض الأكواد المستخدمة"""
+        if update.effective_user.id != ADMIN_ID:
+            update.message.reply_text("⚠️ ليس لديك صلاحية الوصول إلى هذا الأمر.")
+            return
+        
+        used_codes = [code for code, details in self.data['codes'].items() if details['used']]
+        
+        if not used_codes:
+            update.message.reply_text("لا توجد أكواد مستخدمة حتى الآن.")
+            return
+        
+        message = "📋 الأكواد المستخدمة:\n\n"
+        for code in used_codes:
+            details = self.data['codes'][code]
+            user_name = details.get('used_by_name', 'غير معروف')
+            used_at = datetime.fromisoformat(details['used_at']).strftime('%Y-%m-%d %H:%M:%S')
+            message += f"• الكود: {code}\n  المستخدم: {user_name}\n  التاريخ: {used_at}\n\n"
+        
+        # تقسيم الرسالة إذا كانت طويلة جدًا
+        if len(message) > 4000:
+            parts = [message[i:i+4000] for i in range(0, len(message), 4000)]
+            for part in parts:
+                update.message.reply_text(part)
+        else:
+            update.message.reply_text(message)
+    
+    def unused_codes(self, update: Update, context: CallbackContext) -> None:
+        """عرض الأكواد غير المستخدمة"""
+        if update.effective_user.id != ADMIN_ID:
+            update.message.reply_text("⚠️ ليس لديك صلاحية الوصول إلى هذا الأمر.")
+            return
+        
+        unused_codes = [code for code, details in self.data['codes'].items() if not details['used']]
+        
+        if not unused_codes:
+            update.message.reply_text("لا توجد أكواد غير مستخدمة متاحة.")
+            return
+        
+        message = "📋 الأكواد غير المستخدمة:\n\n"
+        for code in unused_codes:
+            details = self.data['codes'][code]
+            created_at = datetime.fromisoformat(details['created_at']).strftime('%Y-%m-%d %H:%M:%S')
+            message += f"• الكود: {code}\n  تاريخ الإنشاء: {created_at}\n"
+        
+        # تقسيم الرسالة إذا كانت طويلة جدًا
+        if len(message) > 4000:
+            parts = [message[i:i+4000] for i in range(0, len(message), 4000)]
+            for part in parts:
+                update.message.reply_text(part)
+        else:
+            update.message.reply_text(message)
+    
     def cancel(self, update: Update, context: CallbackContext) -> int:
         """إلغاء المحادثة الحالية"""
         update.message.reply_text("تم الإلغاء.")
@@ -225,6 +281,8 @@ def main() -> None:
     # معالج الأوامر الأساسية
     dispatcher.add_handler(CommandHandler("start", bot.start))
     dispatcher.add_handler(CommandHandler("stats", bot.stats))
+    dispatcher.add_handler(CommandHandler("used_codes", bot.used_codes))
+    dispatcher.add_handler(CommandHandler("unused_codes", bot.unused_codes))
 
     # معالج إنشاء الأكواد
     conv_handler = ConversationHandler(
