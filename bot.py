@@ -1,337 +1,164 @@
-#!/usr/bin/env python3
-import os
-import logging
+# x1.2
+import telebot
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+import sqlite3
 import random
 import string
+import time
 from datetime import datetime, timedelta
-from telegram import Update, ChatPermissions
-from telegram.ext import (
-    Updater,
-    CommandHandler,
-    MessageHandler,
-    Filters,
-    CallbackContext,
-    ConversationHandler,
-    PicklePersistence,
-)
+import os
 
-# تهيئة السجل
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO,
-    handlers=[
-        logging.FileHandler('/home/ec2-user/projects/WelMemBot/bot.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
-
-# بيانات التكوين
+# إعدادات البوت
 TOKEN = '8034775321:AAHVwntCuBOwDh3NKIPxcs-jGJ9mGq4o0_0'
-GROUP_ID = -1002329495586
 ADMIN_ID = 764559466
+bot = telebot.TeleBot(TOKEN)
 
-# حالات المحادثة
-NUM_CODES, USER_CODE = range(2)
+# مسار قاعدة البيانات
+DB_PATH = '/home/ec2-user/projects/WelMemBot/codes.db'
 
-class GroupMembersBot:
-    def __init__(self):
-        # إعداد استمرارية البيانات
-        self.persistence = PicklePersistence(
-            filename='/home/ec2-user/projects/WelMemBot/bot_data.pickle',
-            store_chat_data=False,
-            store_user_data=False
-        )
-        
-        # إنشاء وتكوين Updater
-        self.updater = Updater(TOKEN, persistence=self.persistence, use_context=True)
-        self.dispatcher = self.updater.dispatcher
-        
-        # تسجيل معالجات الأوامر والمحادثات
-        self._register_handlers()
-        
-        # التحقق من صلاحيات البوت عند التشغيل
-        self._check_bot_permissions()
+# إنشاء قاعدة البيانات إذا لم تكن موجودة
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS codes
+                 (code TEXT PRIMARY KEY, group_id TEXT, used INTEGER DEFAULT 0)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS memberships
+                 (user_id INTEGER, group_id TEXT, join_date TEXT, PRIMARY KEY (user_id, group_id))''')
+    conn.commit()
+    conn.close()
 
-    def _register_handlers(self):
-        """تسجيل جميع معالجات الأوامر والمحادثات"""
-        # معالج إنشاء الأكواد
-        code_generation_handler = ConversationHandler(
-            entry_points=[CommandHandler('generate', self.start_code_generation)],
-            states={
-                NUM_CODES: [MessageHandler(Filters.text & ~Filters.command, self.generate_codes)],
-            },
-            fallbacks=[CommandHandler('cancel', self.cancel_operation)],
-        )
-
-        # معالج إدخال الكود من المستخدم
-        code_usage_handler = ConversationHandler(
-            entry_points=[MessageHandler(Filters.text & ~Filters.command, self.process_user_code)],
-            states={
-                USER_CODE: [MessageHandler(Filters.text & ~Filters.command, self.process_user_code)],
-            },
-            fallbacks=[CommandHandler('cancel', self.cancel_operation)],
-        )
-
-        # تسجيل المعالجات
-        self.dispatcher.add_handler(CommandHandler('start', self.welcome_message))
-        self.dispatcher.add_handler(CommandHandler('stats', self.display_statistics))
-        self.dispatcher.add_handler(code_generation_handler)
-        self.dispatcher.add_handler(code_usage_handler)
-        self.dispatcher.add_error_handler(self.handle_errors)
-
-    def _check_bot_permissions(self):
-        """التحقق من صلاحيات البوت عند التشغيل"""
-        try:
-            bot = self.updater.bot
-            chat_member = bot.get_chat_member(chat_id=GROUP_ID, user_id=bot.id)
-            
-            if chat_member.status != 'administrator':
-                logger.error("البوت ليس مديراً في المجموعة!")
-                raise Exception("البوت يحتاج إلى صلاحيات المدير")
-                
-            if not chat_member.can_invite_users:
-                logger.error("البوت لا يملك صلاحية إضافة أعضاء!")
-                raise Exception("البوت يحتاج إلى صلاحية إضافة أعضاء")
-                
-            logger.info("تم التحقق من صلاحيات البوت بنجاح")
-            
-        except Exception as e:
-            logger.error(f"خطأ في التحقق من الصلاحيات: {e}")
-            raise
-
-    def welcome_message(self, update: Update, context: CallbackContext) -> int:
-        """رسالة الترحيب الأولية"""
-        user = update.effective_user
-        
-        if user.id == ADMIN_ID:
-            update.message.reply_text(
-                "👑 **مرحبًا يا مسؤول!**\n\n"
-                "🔹 /generate - إنشاء أكواد دعوة جديدة\n"
-                "📊 /stats - عرض إحصائيات الأكواد\n\n"
-                "يمكنك إنشاء أكواد دعوة للأعضاء الجدد",
-                parse_mode='Markdown'
-            )
-        else:
-            update.message.reply_text(
-                "👋 **مرحبًا بك!**\n\n"
-                "🔑 الرجاء إدخال كود الدعوة للانضمام إلى المجموعة",
-                parse_mode='Markdown'
-            )
-            return USER_CODE
-            
-        return ConversationHandler.END
-
-    def start_code_generation(self, update: Update, context: CallbackContext) -> int:
-        """بدء عملية إنشاء الأكواد"""
-        if update.effective_user.id != ADMIN_ID:
-            update.message.reply_text(
-                "⛔ **عذرًا، هذا الأمر للمسؤولين فقط**",
-                parse_mode='Markdown'
-            )
-            return ConversationHandler.END
-        
-        update.message.reply_text(
-            "🔢 **إنشاء أكواد دعوة جديدة**\n\n"
-            "الرجاء إدخال عدد الأكواد المطلوبة (1-100):\n"
-            "أو /cancel للإلغاء",
-            parse_mode='Markdown'
-        )
-        return NUM_CODES
-
-    def generate_codes(self, update: Update, context: CallbackContext) -> int:
-        """إنشاء أكواد الدعوة"""
-        try:
-            num_codes = int(update.message.text)
-            if not 1 <= num_codes <= 100:
-                raise ValueError
-        except ValueError:
-            update.message.reply_text(
-                "⚠️ **الرجاء إدخال عدد صحيح بين 1 و 100**",
-                parse_mode='Markdown'
-            )
-            return NUM_CODES
-        
-        bot_data = context.bot_data
-        bot_data.setdefault('codes', {})
-        
-        generated_codes = []
-        for _ in range(num_codes):
-            code = self._create_unique_code(bot_data['codes'])
-            bot_data['codes'][code] = {
-                'created_at': datetime.now().isoformat(),
-                'used': False,
-                'group_id': GROUP_ID
-            }
-            generated_codes.append(code)
-        
-        context.dispatcher.update_persistence()
-        
-        update.message.reply_text(
-            f"✅ **تم إنشاء {num_codes} كود دعوة:**\n\n" +
-            "\n".join([f"• `{code}`" for code in generated_codes]) +
-            "\n\nيمكن للمستخدمين استخدام هذه الأكواد للانضمام إلى المجموعة.",
-            parse_mode='Markdown'
-        )
-        
-        return ConversationHandler.END
-
-    def process_user_code(self, update: Update, context: CallbackContext) -> int:
-        """معالجة كود الدعوة من المستخدم"""
-        user = update.effective_user
-        code = update.message.text.upper().strip()
-        bot_data = context.bot_data
-        
-        # التحقق من صحة الكود
-        if 'codes' not in bot_data or code not in bot_data['codes']:
-            update.message.reply_text(
-                "❌ **الكود المدخل غير صحيح**",
-                parse_mode='Markdown'
-            )
-            return USER_CODE
-        
-        code_info = bot_data['codes'][code]
-        
-        # التحقق من استخدام الكود مسبقاً
-        if code_info['used']:
-            update.message.reply_text(
-                "❌ **هذا الكود تم استخدامه مسبقًا**",
-                parse_mode='Markdown'
-            )
-            return USER_CODE
-        
-        try:
-            # إضافة المستخدم إلى المجموعة
-            self._add_user_to_group(context.bot, user.id)
-            
-            # تحديث حالة الكود
-            self._mark_code_as_used(bot_data, code, user.id)
-            
-            # إرسال رسائل الترحيب
-            self._send_welcome_messages(context.bot, user)
-            
-            update.message.reply_text(
-                "✅ **تمت إضافتك إلى المجموعة بنجاح!**\n\n"
-                "يمكنك الآن زيارة المجموعة والبدء في المشاركة.",
-                parse_mode='Markdown'
-            )
-            
-        except Exception as e:
-            logger.error(f"فشل في إضافة المستخدم: {e}", exc_info=True)
-            update.message.reply_text(
-                "⚠️ **حدث خطأ أثناء الإضافة**\n"
-                "الرجاء المحاولة لاحقًا أو التواصل مع المسؤول.",
-                parse_mode='Markdown'
-            )
-        
-        return ConversationHandler.END
-
-    def _add_user_to_group(self, bot, user_id):
-        """إضافة المستخدم إلى المجموعة مع الصلاحيات المناسبة"""
-        try:
-            # رفع الحظر أولاً إن وجد
-            bot.unban_chat_member(chat_id=GROUP_ID, user_id=user_id)
-        except Exception as e:
-            logger.info(f"المستخدم لم يكن محظورًا: {e}")
-        
-        # منح صلاحيات العضو العادي
-        bot.restrict_chat_member(
-            chat_id=GROUP_ID,
-            user_id=user_id,
-            permissions=ChatPermissions(
-                can_send_messages=True,
-                can_send_media_messages=True,
-                can_send_polls=True,
-                can_send_other_messages=True,
-                can_add_web_page_previews=True,
-                can_change_info=False,
-                can_invite_users=False,
-                can_pin_messages=False
-            )
-        )
-
-    def _mark_code_as_used(self, bot_data, code, user_id):
-        """تحديث حالة الكود بعد استخدامه"""
-        bot_data['codes'][code]['used'] = True
-        bot_data['codes'][code]['used_by'] = user_id
-        bot_data['codes'][code]['used_at'] = datetime.now().isoformat()
-        
-        # حفظ بيانات المستخدم
-        bot_data.setdefault('users', {})[user_id] = {
-            'joined_at': datetime.now().isoformat(),
-            'expires_at': (datetime.now() + timedelta(days=30)).isoformat()
-        }
-
-    def _send_welcome_messages(self, bot, user):
-        """إرسال رسائل الترحيب للمستخدم وفي المجموعة"""
-        # رسالة ترحيبية في المجموعة
-        welcome_msg = (
-            f"🎊 **مرحبًا بكم جميعًا!**\n\n"
-            f"انضم عضو جديد إلى مجموعتنا:\n"
-            f"👤 {user.mention_markdown()}\n\n"
-            f"نتمنى له وقتًا ممتعًا معنا!"
-        )
-        
-        bot.send_message(
-            chat_id=GROUP_ID,
-            text=welcome_msg,
-            parse_mode='Markdown'
-        )
-
-    def display_statistics(self, update: Update, context: CallbackContext) -> None:
-        """عرض إحصائيات البوت"""
-        if update.effective_user.id != ADMIN_ID:
-            update.message.reply_text(
-                "⛔ **عذرًا، هذا الأمر للمسؤولين فقط**",
-                parse_mode='Markdown'
-            )
-            return
-        
-        bot_data = context.bot_data
-        total_codes = len(bot_data.get('codes', {}))
-        used_codes = sum(1 for c in bot_data.get('codes', {}).values() if c['used'])
-        active_users = len(bot_data.get('users', {}))
-        
-        update.message.reply_text(
-            "📈 **إحصائيات البوت:**\n\n"
-            f"• الأكواد المولدة: `{total_codes}`\n"
-            f"• الأكواد المستخدمة: `{used_codes}`\n"
-            f"• الأكواد المتاحة: `{total_codes - used_codes}`\n"
-            f"• الأعضاء النشطين: `{active_users}`",
-            parse_mode='Markdown'
-        )
-
-    def cancel_operation(self, update: Update, context: CallbackContext) -> int:
-        """إلغاء العملية الحالية"""
-        update.message.reply_text("تم إلغاء العملية.")
-        return ConversationHandler.END
-
-    def handle_errors(self, update: Update, context: CallbackContext) -> None:
-        """معالجة الأخطاء العامة"""
-        logger.error("حدث خطأ في البوت", exc_info=context.error)
-        if update and update.effective_message:
-            update.effective_message.reply_text(
-                "⚠️ حدث خطأ غير متوقع. الرجاء المحاولة لاحقًا."
-            )
-
-    def _create_unique_code(self, existing_codes, length=8):
-        """توليد كود فريد غير مستخدم من قبل"""
-        chars = string.ascii_uppercase + string.digits
-        while True:
-            code = ''.join(random.choice(chars) for _ in range(length))
-            if code not in existing_codes:
-                return code
-
-    def run(self):
-        """تشغيل البوت"""
-        self.updater.start_polling(drop_pending_updates=True)
-        logger.info("✅ تم تشغيل البوت بنجاح")
-        self.updater.idle()
-
-if __name__ == '__main__':
+# التحقق من صلاحيات البوت
+def check_bot_permissions(chat_id):
     try:
-        bot = GroupMembersBot()
-        bot.run()
+        bot_member = bot.get_chat_member(chat_id, bot.get_me().id)
+        if not bot_member.can_invite_users or not bot_member.can_send_messages:
+            return False
+        return True
     except Exception as e:
-        logger.critical(f"فشل في تشغيل البوت: {e}")
-        raise
+        print(f"Error checking permissions: {e}")
+        return False
+
+# توليد كود عشوائي
+def generate_code(length=8):
+    characters = string.ascii_letters + string.digits
+    return ''.join(random.choice(characters) for _ in range(length))
+
+# التحقق من إذا كان المستخدم هو الأدمن
+def is_admin(user_id):
+    return user_id == ADMIN_ID
+
+# معالجة الأمر /start
+@bot.message_handler(commands=['start'])
+def start(message):
+    user_id = message.from_user.id
+    if is_admin(user_id):
+        bot.reply_to(message, "مرحبًا أيها الأدمن! أدخل ID المجموعة (مثال: -1002329495586):")
+        bot.register_next_step_handler(message, get_group_id)
+    else:
+        bot.reply_to(message, "أدخل الكود الخاص بك:")
+        bot.register_next_step_handler(message, check_code)
+
+# الحصول على ID المجموعة من الأدمن
+def get_group_id(message):
+    if not is_admin(message.from_user.id):
+        bot.reply_to(message, "غير مصرح لك باستخدام هذا الأمر!")
+        return
+    group_id = message.text.strip()
+    try:
+        if not group_id.startswith('-100'):
+            bot.reply_to(message, "ID المجموعة غير صالح! يجب أن يبدأ بـ -100.")
+            return
+        if not check_bot_permissions(group_id):
+            bot.reply_to(message, "البوت ليس لديه الصلاحيات الكافية في المجموعة! تأكد من أن البوت يمكنه إضافة الأعضاء وإرسال الرسائل.")
+            return
+        bot.reply_to(message, f"تم تحديد المجموعة {group_id}. أدخل عدد الأكواد المطلوبة:")
+        bot.register_next_step_handler(message, lambda m: generate_codes(m, group_id))
+    except Exception as e:
+        bot.reply_to(message, f"خطأ: {e}. تأكد من إدخال ID المجموعة بشكل صحيح.")
+
+# توليد الأكواد
+def generate_codes(message, group_id):
+    if not is_admin(message.from_user.id):
+        bot.reply_to(message, "غير مصرح لك باستخدام هذا الأمر!")
+        return
+    try:
+        num_codes = int(message.text.strip())
+        if num_codes <= 0:
+            bot.reply_to(message, "يرجى إدخال عدد صحيح أكبر من 0.")
+            return
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        codes = []
+        for _ in range(num_codes):
+            code = generate_code()
+            c.execute("INSERT INTO codes (code, group_id, used) VALUES (?, ?, 0)", (code, group_id))
+            codes.append(code)
+        conn.commit()
+        conn.close()
+        codes_str = "\n".join(codes)
+        bot.reply_to(message, f"تم توليد الأكواد التالية:\n{codes_str}")
+    except ValueError:
+        bot.reply_to(message, "يرجى إدخال رقم صحيح!")
+    except Exception as e:
+        bot.reply_to(message, f"خطأ: {e}")
+
+# التحقق من الكود المدخل من المستخدم
+def check_code(message):
+    code = message.text.strip()
+    user_id = message.from_user.id
+    username = message.from_user.username or message.from_user.first_name
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT group_id, used FROM codes WHERE code = ?", (code,))
+    result = c.fetchone()
+    if result and result[1] == 0:
+        group_id = result[0]
+        try:
+            if not check_bot_permissions(group_id):
+                bot.reply_to(message, "البوت ليس لديه الصلاحيات الكافية في المجموعة!")
+                return
+            bot.add_chat_member(group_id, user_id)
+            c.execute("UPDATE codes SET used = 1 WHERE code = ?", (code,))
+            c.execute("INSERT INTO memberships (user_id, group_id, join_date) VALUES (?, ?, ?)",
+                      (user_id, group_id, datetime.now().isoformat()))
+            conn.commit()
+            welcome_message = (
+                f"Welcome, {username}!\n"
+                "Your membership will automatically expire after one month.\n"
+                "Please adhere to the group rules and avoid leaving before the specified period to prevent membership suspension."
+            )
+            bot.send_message(group_id, welcome_message)
+            bot.reply_to(message, "تمت إضافتك إلى المجموعة بنجاح!")
+        except Exception as e:
+            bot.reply_to(message, f"خطأ: {e}")
+    else:
+        bot.reply_to(message, "The entered code is invalid. Please try entering the code correctly.")
+    conn.close()
+
+# إنهاء العضوية بعد شهر
+def check_memberships():
+    while True:
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            one_month_ago = (datetime.now() - timedelta(days=30)).isoformat()
+            c.execute("SELECT user_id, group_id FROM memberships WHERE join_date < ?", (one_month_ago,))
+            expired = c.fetchall()
+            for user_id, group_id in expired:
+                try:
+                    bot.kick_chat_member(group_id, user_id)
+                    c.execute("DELETE FROM memberships WHERE user_id = ? AND group_id = ?", (user_id, group_id))
+                except Exception as e:
+                    print(f"Error kicking user {user_id} from group {group_id}: {e}")
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"Error in membership check: {e}")
+        time.sleep(86400)  # التحقق كل 24 ساعة
+
+# بدء البوت
+if __name__ == '__main__':
+    init_db()
+    import threading
+    threading.Thread(target=check_memberships, daemon=True).start()
+    bot.polling(none_stop=True)
