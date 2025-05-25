@@ -1,4 +1,4 @@
-# v3.1
+# v3.2
 import logging
 from telegram import Update
 from telegram.ext import (
@@ -23,7 +23,6 @@ logger = logging.getLogger(__name__)
 
 # الثوابت
 TOKEN = '8034775321:AAHVwntCuBOwDh3NKIPxcs-jGJ9mGq4o0_0'
-GROUP_ID = -1002329495586  # سيتم تحديثه بواسطة المسؤول
 ADMIN_ID = 764559466
 DATA_FILE = 'codes.json'
 
@@ -133,8 +132,8 @@ class WelMemBot:
     
     def handle_code(self, update: Update, context: CallbackContext):
         """معالجة كود الدعوة من المستخدم"""
-        # تجاهل الرسائل إذا كانت محادثة توليد أكواد نشطة
-        if 'group_id' in context.user_data:
+        # تجاهل إذا كان المستخدم في محادثة توليد أكواد
+        if context.user_data.get('in_conversation', False):
             return
         
         user = update.effective_user
@@ -142,7 +141,6 @@ class WelMemBot:
         
         if code in self.codes:
             if not self.codes[code]['used']:
-                # تم العثور على الكود ولم يتم استخدامه بعد
                 group_id = self.codes[code]['group_id']
                 
                 try:
@@ -169,7 +167,6 @@ class WelMemBot:
                         text=welcome_message
                     )
                     
-                    # إرسال رسالة تأكيد للمستخدم
                     update.message.reply_text(
                         "تمت إضافتك إلى المجموعة بنجاح! الرجاء التحقق من الرسائل في المجموعة."
                     )
@@ -208,27 +205,38 @@ def main():
     updater = Updater(TOKEN, use_context=True)
     dispatcher = updater.dispatcher
     
-    # معالج الأوامر الأساسية
-    dispatcher.add_handler(CommandHandler("start", bot.start))
-    dispatcher.add_handler(CommandHandler("stats", bot.stats))
-    
-    # معالج توليد الأكواد (للمسؤول فقط)
+    # تعريف ConversationHandler أولاً
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('generate', bot.generate_codes_start)],
         states={
-            GETTING_GROUP_ID: [MessageHandler(Filters.text & ~Filters.command, bot.get_group_id)],
-            GETTING_NUM_CODES: [MessageHandler(Filters.text & ~Filters.command, bot.get_num_codes)],
+            GETTING_GROUP_ID: [
+                MessageHandler(Filters.text & ~Filters.command, bot.get_group_id),
+                CommandHandler('cancel', bot.cancel)
+            ],
+            GETTING_NUM_CODES: [
+                MessageHandler(Filters.text & ~Filters.command, bot.get_num_codes),
+                CommandHandler('cancel', bot.cancel)
+            ],
         },
         fallbacks=[CommandHandler('cancel', bot.cancel)],
+        per_user=True,
+        per_chat=True
     )
-    dispatcher.add_handler(conv_handler)
     
-    # معالج الأكواد من المستخدمين العاديين (يأتي بعد ConversationHandler)
-    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, bot.handle_code))
+    # إضافة handlers بالترتيب الصحيح
+    dispatcher.add_handler(conv_handler)
+    dispatcher.add_handler(CommandHandler("start", bot.start))
+    dispatcher.add_handler(CommandHandler("stats", bot.stats))
+    
+    # إضافة MessageHandler آخر مع فلتر لتجنب التداخل
+    dispatcher.add_handler(MessageHandler(
+        Filters.text & ~Filters.command & ~Filters.update.edited_message,
+        bot.handle_code
+    ))
     
     # بدء البوت
     updater.start_polling()
-    logger.info("Bot is running...")
+    logger.info("Bot is running and responding to commands...")
     updater.idle()
 
 if __name__ == '__main__':
