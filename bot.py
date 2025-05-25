@@ -35,13 +35,10 @@ ADMIN_ID = 764559466
 # حالات المحادثة
 GROUP_LINK, NUM_CODES, USER_CODE = range(3)
 
-# مسار ملف البيانات المستدامة
-PERSISTENCE_FILE = '/home/ec2-user/projects/WelMemBot/bot_persistence.pickle'
-
 class WelMemBot:
     def __init__(self):
         self.persistence = PicklePersistence(
-            filename=PERSISTENCE_FILE,
+            filename='/home/ec2-user/projects/WelMemBot/bot_persistence.pickle',
             store_chat_data=False,
             store_user_data=False,
             single_file=False
@@ -54,7 +51,6 @@ class WelMemBot:
         self._load_legacy_data()
 
     def _setup_handlers(self):
-        # معالجات المحادثة للمسؤول
         conv_handler = ConversationHandler(
             entry_points=[CommandHandler('generate', self.generate_codes)],
             states={
@@ -64,7 +60,6 @@ class WelMemBot:
             fallbacks=[CommandHandler('cancel', self.cancel)],
         )
 
-        # معالجة إدخال الكود من قبل المستخدم
         user_code_handler = ConversationHandler(
             entry_points=[MessageHandler(Filters.text & ~Filters.command, self.user_code)],
             states={
@@ -73,7 +68,6 @@ class WelMemBot:
             fallbacks=[CommandHandler('cancel', self.cancel)],
         )
 
-        # تسجيل المعالجات
         self.dispatcher.add_handler(CommandHandler('start', self.start))
         self.dispatcher.add_handler(CommandHandler('stats', self.stats))
         self.dispatcher.add_handler(CommandHandler('broadcast', self.broadcast, pass_args=True))
@@ -88,11 +82,10 @@ class WelMemBot:
                 with open(legacy_file, 'r') as f:
                     legacy_data = json.load(f)
                     self.persistence.bot_data.update(legacy_data)
-                
                 os.rename(legacy_file, f'{legacy_file}.backup')
-                logger.info("Migrated legacy data successfully")
+                logger.info("تم تحميل البيانات القديمة بنجاح")
             except Exception as e:
-                logger.error(f"Failed to migrate legacy data: {e}")
+                logger.error(f"خطأ في تحميل البيانات القديمة: {e}")
 
     def start(self, update: Update, context: CallbackContext) -> int:
         user = update.effective_user
@@ -100,8 +93,7 @@ class WelMemBot:
             update.message.reply_text(
                 "👑 مرحبًا يا مسؤول!\n"
                 "🔹 استخدم /generate لإنشاء أكواد دعوة جديدة\n"
-                "📊 استخدم /stats لعرض إحصائيات الأكواد\n"
-                "📢 استخدم /broadcast لإرسال رسالة لجميع الأعضاء"
+                "📊 استخدم /stats لعرض إحصائيات الأكواد"
             )
             return ConversationHandler.END
         else:
@@ -117,18 +109,13 @@ class WelMemBot:
             return ConversationHandler.END
         
         update.message.reply_text(
-            "🔗 أرسل رابط الدعوة للمجموعة:\n"
-            "(يجب أن يكون الرابط بصيغة https://t.me/joinchat/xxxxxx)\n"
+            "🔗 أرسل رابط الدعوة للمجموعة (لأغراض التسجيل فقط):\n"
             "أو /cancel للإلغاء"
         )
         return GROUP_LINK
 
     def group_link(self, update: Update, context: CallbackContext) -> int:
         link = update.message.text.strip()
-        if not link.startswith('https://t.me/joinchat/'):
-            update.message.reply_text("❌ رابط غير صالح! يرجى إدخال رابط دعوة صالح.")
-            return GROUP_LINK
-        
         context.user_data['invite_link'] = link
         update.message.reply_text(
             "🔢 كم عدد أكواد الدعوة التي تريد إنشاءها؟ (1-100)\n"
@@ -193,32 +180,50 @@ class WelMemBot:
         code_info = bot_data['codes'][code]
         
         try:
-            # محاولة إضافة المستخدم إلى المجموعة
-            context.bot.unban_chat_member(
-                chat_id=code_info['group_id'],
-                user_id=user.id
-            )
-            
-            # إرسال رابط الدعوة مباشرة للمستخدم
+            # الخطوة 1: رفع الحظر عن المستخدم (إذا كان محظوراً)
+            try:
+                context.bot.unban_chat_member(
+                    chat_id=code_info['group_id'],
+                    user_id=user.id
+                )
+            except Exception as e:
+                logger.info(f"User {user.id} was not banned: {e}")
+
+            # الخطوة 2: إضافة المستخدم مباشرة إلى المجموعة
             context.bot.send_message(
-                chat_id=user.id,
-                text=f"🎉 تم تفعيل الكود بنجاح!\n"
-                     f"انقر على الرابط للانضمام إلى المجموعة:\n"
-                     f"{code_info['invite_link']}"
+                chat_id=code_info['group_id'],
+                text=f"تمت إضافة العضو {user.mention_markdown()} إلى المجموعة."
             )
-            
+
+            # الخطوة 3: منح المستخدم صلاحيات العضوية الكاملة
+            context.bot.restrict_chat_member(
+                chat_id=code_info['group_id'],
+                user_id=user.id,
+                permissions=ChatPermissions(
+                    can_send_messages=True,
+                    can_send_media_messages=True,
+                    can_send_polls=True,
+                    can_send_other_messages=True,
+                    can_add_web_page_previews=True,
+                    can_change_info=False,
+                    can_invite_users=False,
+                    can_pin_messages=False
+                )
+            )
+
             # إرسال رسالة ترحيبية في المجموعة
             welcome_message = (
-                f"أهلاً وسهلاً بك، {user.first_name}!\n\n"
+                f"أهلاً وسهلاً بك، {user.mention_markdown()}!\n\n"
                 "سيتم إنهاء عضويتك بعد شهر تلقائيًا.\n"
-                "يُرجى الالتزام بآداب المجموعة وتجنب المغادرة قبل المدة المحددة، لتجنب إيقاف العضوية."
+                "يُرجى الالتزام بآداب المجموعة."
             )
             
             context.bot.send_message(
                 chat_id=code_info['group_id'],
-                text=welcome_message
+                text=welcome_message,
+                parse_mode='Markdown'
             )
-            
+
             # تحديث البيانات
             bot_data.setdefault('used_codes', set()).add(code)
             bot_data['codes'][code]['used'] = True
@@ -234,7 +239,7 @@ class WelMemBot:
             
             update.message.reply_text(
                 "✅ تمت إضافتك إلى المجموعة بنجاح!\n"
-                "تم إرسال رابط الدعوة إليك في الرسائل الخاصة."
+                "يمكنك الآن الذهاب إلى المجموعة."
             )
             
         except Exception as e:
