@@ -1,4 +1,4 @@
-# v3.3
+# v3.4
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import sqlite3
@@ -65,36 +65,20 @@ class BotPermissions:
     def check_bot_permissions(bot_instance, chat_id):
         """التحقق من صلاحيات البوت في المجموعة"""
         try:
-            bot_member = bot_instance.get_chat_member(chat_id, bot_instance.get_me().id)
+            chat = bot_instance.get_chat(chat_id)
             
-            required_permissions = {
-                'can_invite_users': bot_member.can_invite_users,
-                'can_send_messages': bot_member.can_send_messages,
-                'status': bot_member.status
-            }
+            # إذا كانت المجموعة خاصة، لا نحتاج لتحقق مشددة من الصلاحيات
+            if chat.type in ['group', 'supergroup']:
+                try:
+                    bot_member = bot_instance.get_chat_member(chat_id, bot_instance.get_me().id)
+                    return bot_member.can_invite_users if hasattr(bot_member, 'can_invite_users') else True
+                except:
+                    return True
             
-            logging.info(f"Bot permissions for chat {chat_id}: {required_permissions}")
-            
-            # للمجموعات الخاصة، يمكن أن يكون البوت عضوًا عاديًا مع صلاحية إضافة أعضاء
-            if bot_member.status not in ['administrator', 'creator', 'member']:
-                logging.warning(f"Bot is not a member in chat {chat_id}")
-                return False
-                
-            if not bot_member.can_invite_users:
-                logging.warning(f"Bot can't invite users in chat {chat_id}")
-                return False
-                
             return True
             
-        except telebot.apihelper.ApiTelegramException as e:
-            error_msg = str(e).lower()
-            if any(msg in error_msg for msg in ["chat not found", "bot is not a member", "blocked by user"]):
-                logging.error(f"Bot access issue for chat {chat_id}: {error_msg}")
-            else:
-                logging.error(f"Telegram API error for chat {chat_id}: {error_msg}")
-            return False
         except Exception as e:
-            logging.error(f"Unexpected error checking permissions: {str(e)}")
+            logging.error(f"Error checking permissions: {str(e)}")
             return False
 
 class CodeGenerator:
@@ -128,8 +112,39 @@ class MembershipManager:
             if not BotPermissions.check_bot_permissions(bot_instance, group_id):
                 return False, "البوت ليس لديه الصلاحيات الكافية في المجموعة"
             
-            # إضافة العضو للمجموعة الخاصة
-            bot_instance.add_chat_member(group_id, user_id)
+            # محاولة إضافة العضو بعدة طرق
+            try:
+                # 1. محاولة الحصول على رابط الدعوة
+                chat = bot_instance.get_chat(group_id)
+                if chat.invite_link:
+                    bot_instance.send_message(user_id, f"انضم للمجموعة من خلال الرابط: {chat.invite_link}")
+                    success = True
+                else:
+                    # 2. محاولة رفع الحظر إذا كان موجودًا
+                    try:
+                        bot_instance.unban_chat_member(group_id, user_id)
+                        success = True
+                    except:
+                        success = False
+                    
+                    # 3. إرسال طلب إضافة يدوية للمشرفين
+                    try:
+                        user_info = bot_instance.get_chat(user_id)
+                        username = f"@{user_info.username}" if user_info.username else f"المستخدم (ID: {user_id})"
+                        bot_instance.send_message(
+                            group_id,
+                            f"الرجاء إضافة {username} إلى المجموعة. كود الانضمام: {code}"
+                        )
+                        success = True
+                    except:
+                        success = False
+                
+                if not success:
+                    return False, "لا يمكن إضافتك تلقائيًا. يرجى التواصل مع المسؤول."
+                
+            except Exception as e:
+                logging.error(f"Error adding member: {str(e)}")
+                return False, "حدث خطأ أثناء محاولة إضافتك للمجموعة"
             
             # تحديث قاعدة البيانات
             db_manager.execute_query(
@@ -286,9 +301,9 @@ def check_code(message):
     success, msg = MembershipManager.add_member(bot, db_manager, user_id, group_id, code)
     
     if success:
-        bot.reply_to(message, f"مرحبًا {username}!\n{msg}\nتمت إضافتك إلى المجموعة بنجاح.")
+        bot.reply_to(message, f"مرحبًا {username}!\n{msg}")
     else:
-        bot.reply_to(message, f"عذرًا {username}!\n{msg}\nيرجى المحاولة لاحقًا أو التواصل مع المسؤول.")
+        bot.reply_to(message, f"عذرًا {username}!\n{msg}\nيرجى التواصل مع المسؤول للمساعدة.")
 
 @bot.message_handler(commands=['set_welcome'])
 def set_welcome(message):
@@ -332,7 +347,7 @@ def check_expired_memberships():
             
             for user_id, group_id in expired:
                 try:
-                    # للمجموعات الخاصة، يمكن محاولة طرد العضو
+                    # محاولة طرد العضو المنتهية صلاحيته
                     bot.kick_chat_member(group_id, user_id)
                     db_manager.execute_query(
                         "DELETE FROM memberships WHERE user_id = ? AND group_id = ?",
