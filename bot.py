@@ -22,12 +22,12 @@ load_dotenv()
 # Bot settings
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 BOT_USERNAME = "WelMemBot"
-ADMIN_IDS = [764559466]  # Admin ID
-INVITE_LINK = "https://t.me/+BgsrjW-Y8qtkOTY0"  # Group invite link
+ADMIN_IDS = [764559466]
+INVITE_LINK = "https://t.me/+BgsrjW-Y8qtkOTY0"
 WELCOME_MESSAGE = """
 Welcome, {username}!
 Your membership will automatically expire after 1 month.
-Please adhere to the group rules and avoid leaving before the specified period to prevent membership suspension.
+Please adhere to the group rules.
 """
 DB_PATH = Path(__file__).parent / "invite_codes.db"
 DB_URL = f"sqlite:///{DB_PATH}"
@@ -39,7 +39,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Database setup with SQLAlchemy
+# Database setup
 Base = declarative_base()
 
 class InviteCode(Base):
@@ -68,7 +68,6 @@ class Member(Base):
 def init_db():
     engine = create_engine(DB_URL, connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine)
-    # Create indexes for performance
     with engine.connect() as conn:
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_code ON invite_codes(code)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_user_id ON members(user_id)"))
@@ -77,152 +76,22 @@ def init_db():
 engine = init_db()
 Session = sessionmaker(bind=engine)
 
-# Admin check
 def is_admin(user_id):
     return user_id in ADMIN_IDS
 
-# Helper functions
 def generate_random_code():
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
 
-# Bot handlers
 async def start(update: Update, context):
     if is_admin(update.effective_user.id):
         keyboard = [
-            [InlineKeyboardButton("Generate Invite Codes", callback_data='generate_codes')],
-            [InlineKeyboardButton("Set Group", callback_data='set_group')],
-            [InlineKeyboardButton("Show Statistics", callback_data='show_stats')]
+            [InlineKeyboardButton("Generate Codes", callback_data='generate_codes')],
+            [InlineKeyboardButton("Set Group", callback_data='set_group')]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text('Admin Panel - Please choose an option:', reply_markup=reply_markup)
+        await update.message.reply_text('Admin Panel:', reply_markup=reply_markup)
     else:
-        await update.message.reply_text('Hello! To join the group, please enter your invite code.')
-
-async def admin_command(update: Update, context):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("⛔ Access denied.")
-        return
-    
-    keyboard = [
-        [InlineKeyboardButton("Generate Invite Codes", callback_data='generate_codes')],
-        [InlineKeyboardButton("Set Group", callback_data='set_group')],
-        [InlineKeyboardButton("Show Statistics", callback_data='show_stats')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text('Admin Dashboard:', reply_markup=reply_markup)
-
-async def set_group(update: Update, context):
-    query = update.callback_query
-    if not is_admin(query.from_user.id):
-        await query.answer("⛔ Access denied.")
-        return
-    
-    await query.answer()
-    await query.edit_message_text(text="Please send the group ID and name in this format:\n/group 12345678 GroupName")
-
-async def handle_group_id(update: Update, context):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("⛔ Access denied.")
-        return
-    
-    try:
-        parts = update.message.text.split()
-        if len(parts) < 3 or not parts[1].isdigit():
-            await update.message.reply_text("Invalid format. Please use: /group 12345678 GroupName")
-            return
-        
-        group_id = int(parts[1])
-        group_name = ' '.join(parts[2:])
-        
-        # Check if bot has admin permissions
-        try:
-            bot_member = await context.bot.get_chat_member(group_id, context.bot.id)
-            if not bot_member.status in ['administrator', 'creator']:
-                await update.message.reply_text("Error: Bot must be an admin in the group.")
-                return
-        except TelegramError as e:
-            logger.error(f"Error checking bot permissions for group {group_id}: {str(e)}")
-            await update.message.reply_text("Error: Unable to verify bot permissions in the group.")
-            return
-
-        with Session() as session:
-            group = session.query(GroupSettings).filter_by(id=1).first()
-            if not group:
-                group = GroupSettings(id=1, group_id=group_id, group_name=group_name)
-            else:
-                group.group_id = group_id
-                group.group_name = group_name
-            session.add(group)
-            session.commit()
-        
-        await update.message.reply_text(f"Group set successfully!\nID: {group_id}\nName: {group_name}")
-    except Exception as e:
-        logger.error(f"Error setting group: {str(e)}")
-        await update.message.reply_text(f"Error setting group: {str(e)}")
-
-async def generate_codes(update: Update, context):
-    query = update.callback_query
-    if not is_admin(query.from_user.id):
-        await query.answer("⛔ Access denied.")
-        return
-    
-    await query.answer()
-    await query.edit_message_text(text="How many invite codes would you like to generate? Please send a number.")
-
-async def handle_code_count(update: Update, context):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("⛔ Access denied.")
-        return
-    
-    try:
-        count = int(update.message.text)
-        if count <= 0 or count > 100:
-            await update.message.reply_text("Please enter a number between 1 and 100.")
-            return
-        
-        codes = []
-        with Session() as session:
-            for _ in range(count):
-                code = generate_random_code()
-                expires_at = datetime.now() + timedelta(days=30)
-                invite_code = InviteCode(code=code, expires_at=expires_at)
-                session.add(invite_code)
-                codes.append(code)
-            session.commit()
-        
-        await update.message.reply_text(f"✅ Generated {count} invite codes (valid for 30 days):\n\n" + "\n".join(codes))
-    except ValueError:
-        await update.message.reply_text("Please enter a valid number.")
-    except SQLAlchemyError as e:
-        logger.error(f"Error generating codes: {str(e)}")
-        await update.message.reply_text("Error generating codes. Please try again later.")
-
-async def show_stats(update: Update, context):
-    query = update.callback_query
-    if not is_admin(query.from_user.id):
-        await query.answer("⛔ Access denied.")
-        return
-    
-    try:
-        with Session() as session:
-            total_codes = session.query(InviteCode).count()
-            used_codes = session.query(InviteCode).filter_by(used=True).count()
-            total_members = session.query(Member).count()
-            group = session.query(GroupSettings).filter_by(id=1).first()
-            group_info = f"Current group: {group.group_name} (ID: {group.group_id})" if group else "No group set yet"
-        
-        await query.answer()
-        await query.edit_message_text(
-            text=f"📊 Bot Statistics:\n\n"
-                 f"• Total codes: {total_codes}\n"
-                 f"• Used codes: {used_codes}\n"
-                 f"• Available codes: {total_codes - used_codes}\n"
-                 f"• Total members: {total_members}\n\n"
-                 f"{group_info}"
-        )
-    except SQLAlchemyError as e:
-        logger.error(f"Error fetching stats: {str(e)}")
-        await query.edit_message_text("Error fetching statistics. Please try again later.")
+        await update.message.reply_text('Please enter your invite code:')
 
 async def handle_invite_code(update: Update, context):
     user_code = update.message.text.upper().strip()
@@ -232,125 +101,80 @@ async def handle_invite_code(update: Update, context):
         with Session() as session:
             code = session.query(InviteCode).filter_by(code=user_code).first()
             if not code or code.used or code.expires_at < datetime.now():
-                await update.message.reply_text("❌ Invalid or expired invite code. Please check and try again.")
+                await update.message.reply_text("❌ Invalid code")
                 return
-            
-            group = session.query(GroupSettings).filter_by(id=1).first()
+
+            group = session.query(GroupSettings).first()
             if not group:
-                await update.message.reply_text("Group not set yet. Please contact the admin.")
+                await update.message.reply_text("Group not configured")
                 return
-            
-            # Check if user is already in the group
+
             try:
                 member = await context.bot.get_chat_member(group.group_id, user.id)
                 if member.status in ['member', 'administrator', 'creator']:
-                    await update.message.reply_text("You are already a member of the group!")
+                    await update.message.reply_text("You're already a member!")
                     return
-            except TelegramError as e:
-                if "user not found" not in str(e).lower():
-                    raise
-            
-            # Mark code as used
+            except TelegramError:
+                pass
+
             code.used = True
             code.used_by = user.id
             code.used_at = datetime.now()
-            
-            # Add member to database
-            member = Member(
+
+            new_member = Member(
                 user_id=user.id,
                 username=user.username,
                 first_name=user.first_name,
                 last_name=user.last_name,
                 joined_at=datetime.now(),
                 expires_at=datetime.now() + timedelta(days=30)
-                try
-                    try:
-                    session.add(member)
-                    except Exception as e:
-                    logger.error(f"Error adding member: {e}")
-                    session.commit()
-        
-        # Send success message to user
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=f"✅ Invite code verified successfully!\n\n"
-                 f"Click the link below to join our group:\n"
-                 f"{INVITE_LINK}\n\n"
-                 f"We look forward to having you with us!"
-        )
-        
-        # Send welcome message to group
-        username = user.username or user.first_name or "New Member"
-        welcome_msg = WELCOME_MESSAGE.format(username=username)
+            session.add(new_member)
+            session.commit()
+
+        await update.message.reply_text(f"✅ Verified!\nJoin here: {INVITE_LINK}")
         await context.bot.send_message(
             chat_id=group.group_id,
-            text=welcome_msg
+            text=WELCOME_MESSAGE.format(username=user.username or user.first_name)
         )
-        
-    except TelegramError as e:
-        logger.error(f"Telegram error processing code {user_code} for user {user.id}: {str(e)}")
-        await update.message.reply_text("Error processing invite code. Please try again later.")
-    except SQLAlchemyError as e:
-        logger.error(f"Database error processing code {user_code} for user {user.id}: {str(e)}")
-        await update.message.reply_text("Database error. Please try again later.")
+
+    except Exception as e:
+        logger.error(f"Error: {str(e)}")
+        await update.message.reply_text("An error occurred")
 
 async def check_expired_members(context):
     try:
         with Session() as session:
-            expired_members = session.query(Member).filter(Member.expires_at < datetime.now()).all()
-            group = session.query(GroupSettings).filter_by(id=1).first()
+            expired = session.query(Member).filter(Member.expires_at < datetime.now()).all()
+            group = session.query(GroupSettings).first()
             if not group:
                 return
-            
-            for member in expired_members:
+
+            for member in expired:
                 try:
                     await context.bot.ban_chat_member(group.group_id, member.user_id)
                     session.delete(member)
-                    logger.info(f"Removed expired member {member.user_id} from group {group.group_id}")
                 except TelegramError as e:
-                    logger.error(f"Error removing member {member.user_id}: {str(e)}")
+                    logger.error(f"Failed to remove {member.user_id}: {str(e)}")
             session.commit()
-    except SQLAlchemyError as e:
-        logger.error(f"Error checking expired members: {str(e)}")
-
-async def error_handler(update: Update, context):
-    logger.error(f"Update {update} caused error {context.error}")
-    if update and update.effective_message:
-        await update.effective_message.reply_text("An error occurred. Please try again later.")
-
-def shutdown(signum, frame):
-    logger.info("Shutting down bot...")
-    scheduler.shutdown()
-    engine.dispose()
-    sys.exit(0)
+    except Exception as e:
+        logger.error(f"Error in check_expired_members: {str(e)}")
 
 def main():
-    global scheduler
-    # Initialize scheduler for checking expired members
     scheduler = AsyncIOScheduler()
     scheduler.add_job(check_expired_members, 'interval', hours=24, args=[None])
     scheduler.start()
 
-    # Handle graceful shutdown
-    signal.signal(signal.SIGINT, shutdown)
-    signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGINT, lambda s, f: (scheduler.shutdown(), sys.exit(0)))
+    signal.signal(signal.SIGTERM, lambda s, f: (scheduler.shutdown(), sys.exit(0)))
 
-    # Initialize bot
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Handlers
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("admin", admin_command))
-    app.add_handler(CommandHandler("group", handle_group_id))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_invite_code))
-    app.add_handler(MessageHandler(filters.Regex(r'^\d+$') & filters.Chat(chat_id=ADMIN_IDS), handle_code_count))
-    app.add_handler(CallbackQueryHandler(generate_codes, pattern='generate_codes'))
-    app.add_handler(CallbackQueryHandler(set_group, pattern='set_group'))
-    app.add_handler(CallbackQueryHandler(show_stats, pattern='show_stats'))
-    app.add_error_handler(error_handler)
+    app.add_error_handler(lambda u, c: logger.error(f"Update {u} caused error {c.error}"))
 
     app.run_polling()
-    logger.info("Bot is running...")
+    logger.info("Bot started")
 
 if __name__ == '__main__':
     main()
