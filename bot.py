@@ -263,8 +263,12 @@ async def handle_invite_code(update: Update, context):
                 last_name=user.last_name,
                 joined_at=datetime.now(),
                 expires_at=datetime.now() + timedelta(days=30)
-            session.add(member)
-            session.commit()
+                try
+                    try:
+                    session.add(member)
+                    except Exception as e:
+                    logger.error(f"Error adding member: {e}")
+                    session.commit()
         
         # Send success message to user
         await context.bot.send_message(
