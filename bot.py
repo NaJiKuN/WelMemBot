@@ -1,6 +1,6 @@
-# v3.0
+# v3.1
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update
 from telegram.ext import (
     Updater,
     CommandHandler,
@@ -133,6 +133,10 @@ class WelMemBot:
     
     def handle_code(self, update: Update, context: CallbackContext):
         """معالجة كود الدعوة من المستخدم"""
+        # تجاهل الرسائل إذا كانت محادثة توليد أكواد نشطة
+        if 'group_id' in context.user_data:
+            return
+        
         user = update.effective_user
         code = update.message.text.upper()
         
@@ -204,7 +208,7 @@ def main():
     updater = Updater(TOKEN, use_context=True)
     dispatcher = updater.dispatcher
     
-    # معالج الأوامر
+    # معالج الأوامر الأساسية
     dispatcher.add_handler(CommandHandler("start", bot.start))
     dispatcher.add_handler(CommandHandler("stats", bot.stats))
     
@@ -219,11 +223,12 @@ def main():
     )
     dispatcher.add_handler(conv_handler)
     
-    # معالج الأكواد من المستخدمين العاديين
+    # معالج الأكواد من المستخدمين العاديين (يأتي بعد ConversationHandler)
     dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, bot.handle_code))
     
     # بدء البوت
     updater.start_polling()
+    logger.info("Bot is running...")
     updater.idle()
 
 if __name__ == '__main__':
