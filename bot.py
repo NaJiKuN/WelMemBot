@@ -1,4 +1,4 @@
-# x1.8
+# x1.9
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import sqlite3
@@ -16,6 +16,9 @@ TOKEN = '8034775321:AAHVwntCuBOwDh3NKIPxcs-jGJ9mGq4o0_0'
 ADMIN_ID = 764559466
 DB_PATH = '/home/ec2-user/projects/WelMemBot/codes.db'
 LOG_FILE = '/home/ec2-user/projects/WelMemBot/bot.log'
+
+# قائمة المجموعات المعتمدة (يمكن تحديثها يدويًا أو عبر أمر لاحقاً)
+APPROVED_GROUP_IDS = ['-1002329495586']
 
 # إعداد التسجيل (Logging)
 logging.basicConfig(
@@ -96,6 +99,10 @@ class BotPermissions:
     def check_bot_permissions(bot_instance, chat_id):
         """التحقق من صلاحيات البوت في المجموعة"""
         try:
+            if str(chat_id) not in APPROVED_GROUP_IDS:
+                logger.warning(f"المجموعة {chat_id} غير معتمدة")
+                return False, "هذه المجموعة غير معتمدة. تواصل مع المسؤول للاعتماد."
+            
             chat = bot_instance.get_chat(chat_id)
             bot_member = bot_instance.get_chat_member(chat_id, bot_instance.get_me().id)
             
@@ -147,6 +154,10 @@ class CodeGenerator:
     @staticmethod
     def generate_multiple_codes(db_manager, group_id, count):
         """توليد عدة أكواد للمجموعة"""
+        if str(group_id) not in APPROVED_GROUP_IDS:
+            logger.error(f"محاولة توليد أكواد لمجموعة غير معتمدة: {group_id}")
+            return []
+        
         codes = []
         attempts = 0
         max_attempts = count * 2
@@ -170,6 +181,10 @@ class InviteManager:
     @staticmethod
     def create_invite_link(bot_instance, group_id, user_id, code):
         """إنشاء رابط دعوة مؤقت"""
+        if str(group_id) not in APPROVED_GROUP_IDS:
+            logger.error(f"محاولة إنشاء رابط دعوة لمجموعة غير معتمدة: {group_id}")
+            return None, None, "المجموعة غير معتمدة"
+        
         try:
             logger.info(f"محاولة إنشاء رابط دعوة للمجموعة {group_id} بواسطة المستخدم {user_id} باستخدام الكود {code}")
             expire_date = int(time.time()) + 86400  # 24 ساعة
@@ -255,6 +270,10 @@ class MembershipManager:
                 return False, "الكود غير صالح أو مستخدم من قبل"
             
             group_id = result[0]['group_id']
+            if str(group_id) not in APPROVED_GROUP_IDS:
+                logger.error(f"محاولة معالجة كود لمجموعة غير معتمدة: {group_id}")
+                return False, "المجموعة غير معتمدة. تواصل مع المسؤول."
+            
             logger.info(f"الكود {code} مرتبط بالمجموعة {group_id}")
             
             try:
@@ -304,6 +323,10 @@ class MembershipManager:
     def send_welcome_message(bot_instance, db_manager, chat_id, user_id):
         """إرسال رسالة ترحيبية عند الانضمام"""
         try:
+            if str(chat_id) not in APPROVED_GROUP_IDS:
+                logger.warning(f"محاولة إرسال رسالة ترحيب لمجموعة غير معتمدة: {chat_id}")
+                return False
+            
             user = bot_instance.get_chat(user_id)
             username = user.first_name or user.username or f"User_{user_id}"
             # جلب الرسالة الترحيبية من قاعدة البيانات
@@ -313,7 +336,7 @@ class MembershipManager:
                 fetch=True
             )
             welcome_msg_template = welcome_result[0]['welcome_message'] if welcome_result else \
-                "أهلاً وسهلاً بك، {username}!\nسيتم إنهاء عضويتك بعد شهر تلقائيًا.\nيُرجى الالتزام بآداب المجموعة وتجنب المغادرة قبل المدة المحددة، لتجنب إيقاف العضوية."
+                "🎉 مرحبًا بك، {username}!\n📅 عضويتك ستنتهي بعد شهر تلقائيًا.\n📜 يرجى الالتزام بقواعد المجموعة وتجنب المغادرة قبل المدة المحددة لتجنب الإيقاف."
             
             # استبدال {username} باسم المستخدم
             welcome_msg = welcome_msg_template.format(username=username)
@@ -359,6 +382,8 @@ class MembershipManager:
             
             for member in expired_members:
                 try:
+                    if str(member['group_id']) not in APPROVED_GROUP_IDS:
+                        continue
                     user = bot_instance.get_chat(member['user_id'])
                     username = user.first_name or user.username or f"User_{member['user_id']}"
                     bot_instance.send_message(
@@ -437,6 +462,10 @@ def get_group_id(message):
             bot.reply_to(message, "معرف المجموعة غير صالح! يجب أن يبدأ بـ -100.")
             return
             
+        if str(group_id) not in APPROVED_GROUP_IDS:
+            bot.reply_to(message, f"معرف المجموعة {group_id} غير معتمد. تواصل مع المطور لإضافته إلى القائمة المعتمدة.")
+            return
+            
         chat = bot.get_chat(group_id)
         
         success, msg = BotPermissions.check_bot_permissions(bot, group_id)
@@ -446,7 +475,7 @@ def get_group_id(message):
         
         db_manager.execute_query(
             "INSERT OR REPLACE INTO groups (group_id, welcome_message, is_private) VALUES (?, ?, ?)",
-            (group_id, "أهلاً وسهلاً بك، {username}!\nسيتم إنهاء عضويتك بعد شهر تلقائيًا.\nيُرجى الالتزام بآداب المجموعة وتجنب المغادرة قبل المدة المحددة، لتجنب إيقاف العضوية.", int(chat.type in ['group', 'supergroup']))
+            (group_id, "🎉 مرحبًا بك، {username}!\n📅 عضويتك ستنتهي بعد شهر تلقائيًا.\n📜 يرجى الالتزام بقواعد المجموعة وتجنب المغادرة قبل المدة المحددة لتجنب الإيقاف.", int(chat.type in ['group', 'supergroup']))
         )
         
         bot.reply_to(message, f"تم تحديد المجموعة {chat.title} (ID: {group_id}). أدخل عدد الأكواد المطلوبة:")
@@ -460,6 +489,10 @@ def generate_codes(message, group_id):
     """توليد الأكواد للمجموعة"""
     if message.from_user.id != ADMIN_ID:
         bot.reply_to(message, "غير مصرح لك باستخدام هذا الأمر!")
+        return
+    
+    if str(group_id) not in APPROVED_GROUP_IDS:
+        bot.reply_to(message, f"المجموعة {group_id} غير معتمدة. تواصل مع المطور لإضافتها.")
         return
     
     try:
@@ -501,10 +534,11 @@ def show_codes_links(message):
             
         markup = InlineKeyboardMarkup()
         for group in groups:
-            markup.add(InlineKeyboardButton(
-                f"المجموعة {group['group_id']}",
-                callback_data=f"group_{group['group_id']}")
-            )
+            if str(group['group_id']) in APPROVED_GROUP_IDS:
+                markup.add(InlineKeyboardButton(
+                    f"المجموعة {group['group_id']}",
+                    callback_data=f"group_{group['group_id']}")
+                )
         
         bot.reply_to(message, "اختر المجموعة لعرض الأكواد والروابط:", reply_markup=markup)
     except Exception as e:
@@ -513,6 +547,10 @@ def show_codes_links(message):
 
 def show_group_links(message, group_id):
     """عرض روابط وأكواد مجموعة محددة"""
+    if str(group_id) not in APPROVED_GROUP_IDS:
+        bot.reply_to(message, f"المجموعة {group_id} غير معتمدة.")
+        return
+    
     try:
         used_codes = db_manager.execute_query(
             """SELECT code, user_id, created_at 
@@ -603,10 +641,15 @@ def set_welcome(message):
             if len(parts) < 3:
                 bot.reply_to(message, 
                             "يرجى إدخال معرف المجموعة ورسالة الترحيب!\n"
-                            "مثال: /set_welcome -1002329495586 أهلاً وسهلاً بك، {username}!\n"
+                            "مثال: /set_welcome -1002329495586 🎉 مرحبًا بك، {username}!\n"
+                            "📅 عضويتك ستنتهي بعد شهر.\n📜 يرجى الالتزام بقواعد المجموعة.\n"
                             "يمكن استخدام {username} لاستبدال اسم العضو تلقائيًا.")
                 return
             group_id, welcome_msg = parts[1], parts[2]
+        
+        if str(group_id) not in APPROVED_GROUP_IDS:
+            bot.reply_to(message, f"المجموعة {group_id} غير معتمدة. أضفها إلى القائمة المعتمدة أولاً.")
+            return
         
         if not welcome_msg:
             bot.reply_to(message, "يرجى إدخال نص الرسالة الترحيبية!")
@@ -630,6 +673,10 @@ def handle_new_member(update):
         if update.new_chat_member.status == 'member':
             chat_id = update.chat.id
             user_id = update.new_chat_member.user.id
+            
+            if str(chat_id) not in APPROVED_GROUP_IDS:
+                logger.warning(f"محاولة معالجة عضوية في مجموعة غير معتمدة: {chat_id}")
+                return
             
             invite_link = getattr(update, 'invite_link', None)
             if invite_link:
@@ -685,6 +732,8 @@ def check_expired_links_and_memberships():
             )
             
             for member in expired_members:
+                if str(member['group_id']) not in APPROVED_GROUP_IDS:
+                    continue
                 try:
                     bot.kick_chat_member(member['group_id'], member['user_id'])
                     db_manager.execute_query(
