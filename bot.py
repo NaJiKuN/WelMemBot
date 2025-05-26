@@ -1,4 +1,4 @@
-# x1.7
+# x1.8
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import sqlite3
@@ -306,13 +306,21 @@ class MembershipManager:
         try:
             user = bot_instance.get_chat(user_id)
             username = user.first_name or user.username or f"User_{user_id}"
-            welcome_msg = f"""Welcome, {username}!
-Your membership will automatically expire after one month.
-Please adhere to the group rules and avoid leaving before the specified period to prevent membership suspension."""
+            # جلب الرسالة الترحيبية من قاعدة البيانات
+            welcome_result = db_manager.execute_query(
+                "SELECT welcome_message FROM groups WHERE group_id = ?",
+                (str(chat_id),),
+                fetch=True
+            )
+            welcome_msg_template = welcome_result[0]['welcome_message'] if welcome_result else \
+                "أهلاً وسهلاً بك، {username}!\nسيتم إنهاء عضويتك بعد شهر تلقائيًا.\nيُرجى الالتزام بآداب المجموعة وتجنب المغادرة قبل المدة المحددة، لتجنب إيقاف العضوية."
+            
+            # استبدال {username} باسم المستخدم
+            welcome_msg = welcome_msg_template.format(username=username)
             
             existing = db_manager.execute_query(
                 "SELECT 1 FROM memberships WHERE user_id = ? AND group_id = ?",
-                (user_id, chat_id),
+                (user_id, str(chat_id)),
                 fetch=True
             )
             if not existing:
@@ -320,7 +328,7 @@ Please adhere to the group rules and avoid leaving before the specified period t
                     """INSERT INTO memberships 
                     (user_id, group_id, join_date) 
                     VALUES (?, ?, ?)""",
-                    (user_id, chat_id, datetime.now().isoformat())
+                    (user_id, str(chat_id), datetime.now().isoformat())
                 )
             
             try:
@@ -438,7 +446,7 @@ def get_group_id(message):
         
         db_manager.execute_query(
             "INSERT OR REPLACE INTO groups (group_id, welcome_message, is_private) VALUES (?, ?, ?)",
-            (group_id, "Welcome to the group!", int(chat.type in ['group', 'supergroup']))
+            (group_id, "أهلاً وسهلاً بك، {username}!\nسيتم إنهاء عضويتك بعد شهر تلقائيًا.\nيُرجى الالتزام بآداب المجموعة وتجنب المغادرة قبل المدة المحددة، لتجنب إيقاف العضوية.", int(chat.type in ['group', 'supergroup']))
         )
         
         bot.reply_to(message, f"تم تحديد المجموعة {chat.title} (ID: {group_id}). أدخل عدد الأكواد المطلوبة:")
@@ -593,16 +601,23 @@ def set_welcome(message):
         else:
             parts = message.text.split(maxsplit=2)
             if len(parts) < 3:
-                bot.reply_to(message, "يرجى إدخال معرف المجموعة ورسالة الترحيب! مثال: /set_welcome -1002329495586 Welcome!")
+                bot.reply_to(message, 
+                            "يرجى إدخال معرف المجموعة ورسالة الترحيب!\n"
+                            "مثال: /set_welcome -1002329495586 أهلاً وسهلاً بك، {username}!\n"
+                            "يمكن استخدام {username} لاستبدال اسم العضو تلقائيًا.")
                 return
             group_id, welcome_msg = parts[1], parts[2]
+        
+        if not welcome_msg:
+            bot.reply_to(message, "يرجى إدخال نص الرسالة الترحيبية!")
+            return
         
         db_manager.execute_query(
             "INSERT OR REPLACE INTO groups (group_id, welcome_message) VALUES (?, ?)",
             (group_id, welcome_msg)
         )
-        bot.reply_to(message, f"تم تحديث رسالة الترحيب للمجموعة {group_id}!")
-        logger.info(f"تم تحديث رسالة الترحيب للمجموعة {group_id}")
+        bot.reply_to(message, f"تم تحديث رسالة الترحيب للمجموعة {group_id} بنجاح!")
+        logger.info(f"تم تحديث رسالة الترحيب للمجموعة {group_id} إلى: {welcome_msg}")
     except Exception as e:
         bot.reply_to(message, f"خطأ: {str(e)}\nاستخدم:\n- داخل المجموعة: /set_welcome <رسالة الترحيب>\n- خارج المجموعة: /set_welcome <group_id> <رسالة الترحيب>")
         logger.error(f"خطأ في تعيين رسالة الترحيب: {str(e)}")
