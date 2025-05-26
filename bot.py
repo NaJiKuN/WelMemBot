@@ -1,4 +1,4 @@
-# x2.0
+# x2.1
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import sqlite3
@@ -122,7 +122,6 @@ class BotPermissions:
             required_permissions = {
                 'can_invite_users': bot_member.can_invite_users if hasattr(bot_member, 'can_invite_users') else False,
                 'can_restrict_members': bot_member.can_restrict_members if hasattr(bot_member, 'can_restrict_members') else False,
-                'can_send_messages': bot_member.can_send_messages if hasattr(bot_member, 'can_send_messages') else False,
                 'status': bot_member.status
             }
             
@@ -137,8 +136,6 @@ class BotPermissions:
                 missing_permissions.append("إضافة أعضاء")
             if not required_permissions['can_restrict_members']:
                 missing_permissions.append("حظر أعضاء")
-            if not required_permissions['can_send_messages']:
-                missing_permissions.append("إرسال رسائل")
                 
             if missing_permissions:
                 error_msg = f"البوت يحتاج الصلاحيات التالية: {', '.join(missing_permissions)}"
