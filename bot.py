@@ -1,6 +1,6 @@
-# X2.5
+# X2.6
 import telegram
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, ConversationHandler
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, ConversationHandler, CallbackQueryHandler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 import json
 import random
@@ -69,13 +69,13 @@ def start_admin(update, context):
     update.message.reply_text('Welcome, admin! What would you like to do?', reply_markup=reply_markup)
     return GROUP_ID
 
-def group_id(update, context):
+def group_id_input(update, context):
     query = update.callback_query
     query.answer()
     query.edit_message_text('Please enter the group ID (e.g., -1002329495586):')
     return GROUP_ID
 
-def group_id_input(update, context):
+def group_id(update, context):
     group_id = update.message.text
     context.user_data['group_id'] = group_id
     update.message.reply_text('Please enter the number of codes to generate:')
@@ -120,7 +120,7 @@ def code_input(update, context):
 def button(update, context):
     query = update.callback_query
     if query.data == 'generate':
-        return group_id(update, context)
+        return group_id_input(update, context)
     elif query.data == 'enter_code':
         return code_request(update, context)
 
@@ -128,7 +128,7 @@ def button(update, context):
 admin_conv = ConversationHandler(
     entry_points=[CommandHandler('start', start_admin)],
     states={
-        GROUP_ID: [MessageHandler(Filters.text & ~Filters.command, group_id_input)],
+        GROUP_ID: [MessageHandler(Filters.text & ~Filters.command, group_id)],
         NUM_CODES: [MessageHandler(Filters.text & ~Filters.command, num_codes)]
     },
     fallbacks=[]
