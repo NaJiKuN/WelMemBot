@@ -1,4 +1,4 @@
-# V4.0
+# x2.4
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import sqlite3
@@ -10,15 +10,20 @@ import os
 import logging
 import threading
 import sys
+import retrying
+from dotenv import load_dotenv
+
+# تحميل متغيرات البيئة
+load_dotenv()
 
 # إعدادات البوت
-TOKEN = '8034775321:AAHVwntCuBOwDh3NKIPxcs-jGJ9mGq4o0_0'
-ADMIN_ID = 764559466
-DB_PATH = '/home/ec2-user/projects/WelMemBot/codes.db'
-LOG_FILE = '/home/ec2-user/projects/WelMemBot/bot.log'
+TOKEN = os.getenv('BOT_TOKEN') or '8034775321:AAHVwntCuBOwDh3NKIPxcs-jGJ9mGq4o0_0'
+ADMIN_ID = int(os.getenv('ADMIN_ID') or '764559466')
+DB_PATH = os.getenv('DB_PATH') or '/home/ec2-user/projects/WelMemBot/codes.db'
+LOG_FILE = os.getenv('LOG_FILE') or '/home/ec2-user/projects/WelMemBot/bot.log'
 
 # المجموعة المعتمدة
-APPROVED_GROUP_ID = '-1002329495586'
+APPROVED_GROUP_ID = os.getenv('APPROVED_GROUP_ID') or '-1002329495586'
 
 # إعداد التسجيل (Logging)
 logging.basicConfig(
@@ -43,30 +48,27 @@ class DatabaseManager:
     def _init_db(self):
         """تهيئة قاعدة البيانات"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with sqlite3.connect(self.db_path, timeout=10) as conn:
                 c = conn.cursor()
-                # جدول الأكواد
                 c.execute('''CREATE TABLE IF NOT EXISTS codes
                             (code TEXT PRIMARY KEY, 
                              group_id TEXT, 
                              used INTEGER DEFAULT 0,
                              user_id INTEGER DEFAULT NULL,
                              created_at TEXT DEFAULT CURRENT_TIMESTAMP)''')
-                # جدول العضويات
                 c.execute('''CREATE TABLE IF NOT EXISTS memberships
                             (user_id INTEGER, 
                              group_id TEXT, 
                              join_date TEXT, 
                              notified INTEGER DEFAULT 0,
                              PRIMARY KEY (user_id, group_id))''')
-                # جدول المجموعات
                 c.execute('''CREATE TABLE IF NOT EXISTS groups
                             (group_id TEXT PRIMARY KEY, 
                              welcome_message TEXT, 
                              is_private INTEGER DEFAULT 0)''')
                 conn.commit()
             logger.info("تم تهيئة قاعدة البيانات بنجاح")
-        except Exception as e:
+        except sqlite3.Error as e:
             logger.error(f"خطأ في تهيئة قاعدة البيانات: {str(e)}")
             raise
     
@@ -78,13 +80,13 @@ class DatabaseManager:
                 (APPROVED_GROUP_ID, "🎉 مرحبًا بك، {username}!\n📅 عضويتك ستنتهي بعد شهر تلقائيًا.\n📜 يرجى الالتزام بقواعد المجموعة وتجنب المغادرة قبل المدة المحددة لتجنب الإيقاف.", 1)
             )
             logger.info("تم إعداد المجموعة المعتمدة مسبقًا بنجاح")
-        except Exception as e:
+        except sqlite3.Error as e:
             logger.error(f"خطأ في إعداد المجموعة المعتمدة: {str(e)}")
     
     def execute_query(self, query, params=(), fetch=False):
         """تنفيذ استعلام على قاعدة البيانات"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with sqlite3.connect(self.db_path, timeout=10) as conn:
                 conn.row_factory = sqlite3.Row
                 c = conn.cursor()
                 c.execute(query, params)
@@ -92,7 +94,7 @@ class DatabaseManager:
                     result = c.fetchall()
                     return result
                 conn.commit()
-        except Exception as e:
+        except sqlite3.Error as e:
             logger.error(f"خطأ في تنفيذ الاستعلام: {str(e)}")
             raise
 
@@ -112,6 +114,7 @@ class BotPermissions:
             required_permissions = {
                 'can_invite_users': bot_member.can_invite_users if hasattr(bot_member, 'can_invite_users') else False,
                 'can_send_messages': True,
+                'can_restrict_members': bot_member.can_restrict_members if hasattr(bot_member, 'can_restrict_members') else False,
                 'status': bot_member.status
             }
             
@@ -124,6 +127,10 @@ class BotPermissions:
             if not required_permissions['can_invite_users']:
                 logger.warning("البوت لا يملك صلاحية إضافة أعضاء")
                 return False, "البوت يحتاج صلاحية إضافة أعضاء"
+                
+            if not required_permissions['can_restrict_members']:
+                logger.warning("البوت لا يملك صلاحية تقييد الأعضاء")
+                return False, "البوت يحتاج صلاحية تقييد الأعضاء"
                 
             return True, "الصلاحيات كافية"
             
@@ -197,16 +204,18 @@ class MembershipManager:
             
             logger.info(f"الكود {code} مرتبط بالمجموعة {group_id}")
             
+            success, message = BotPermissions.check_bot_permissions(bot_instance, group_id)
+            if not success:
+                return False, message
+                
             try:
-                # إنشاء رابط دعوة بدلاً من الإضافة المباشرة
                 invite_link = bot_instance.create_chat_invite_link(
                     chat_id=group_id,
                     name=f"Invite_{code}",
                     member_limit=1,
-                    expire_date=int(time.time()) + 86400  # 24 ساعة
+                    expire_date=int(time.time()) + 86400
                 )
                 
-                # تحديث حالة الكود
                 db_manager.execute_query(
                     """UPDATE codes SET user_id = ?, used = 1 
                     WHERE code = ?""",
@@ -226,8 +235,11 @@ class MembershipManager:
                     logger.error(f"خطأ في إنشاء رابط الدعوة: {str(e)}")
                     return False, f"حدث خطأ: {str(e)}"
             
-        except Exception as e:
+        except sqlite3.Error as e:
             logger.error(f"خطأ في معالجة الكود: {str(e)}")
+            return False, f"خطأ في قاعدة البيانات: {str(e)}"
+        except Exception as e:
+            logger.error(f"خطأ غير متوقع في معالجة الكود: {str(e)}")
             return False, f"حدث خطأ: {str(e)}"
     
     @staticmethod
@@ -241,7 +253,6 @@ class MembershipManager:
             user = bot_instance.get_chat(user_id)
             username = user.first_name or user.username or f"User_{user_id}"
             
-            # جلب الرسالة الترحيبية من قاعدة البيانات
             welcome_result = db_manager.execute_query(
                 "SELECT welcome_message FROM groups WHERE group_id = ?",
                 (str(chat_id),),
@@ -250,10 +261,8 @@ class MembershipManager:
             welcome_msg_template = welcome_result[0]['welcome_message'] if welcome_result else \
                 "🎉 مرحبًا بك، {username}!\n📅 عضويتك ستنتهي بعد شهر تلقائيًا.\n📜 يرجى الالتزام بقواعد المجموعة وتجنب المغادرة قبل المدة المحددة لتجنب الإيقاف."
             
-            # استبدال {username} باسم المستخدم
             welcome_msg = welcome_msg_template.format(username=username)
             
-            # تسجيل العضوية في قاعدة البيانات
             existing = db_manager.execute_query(
                 "SELECT 1 FROM memberships WHERE user_id = ? AND group_id = ?",
                 (user_id, str(chat_id)),
@@ -267,7 +276,6 @@ class MembershipManager:
                     (user_id, str(chat_id), datetime.now().isoformat())
                 )
             
-            # محاولة إرسال الرسالة الترحيبية
             try:
                 bot_instance.send_message(chat_id, welcome_msg)
                 logger.info(f"تم إرسال رسالة الترحيب إلى المجموعة {chat_id} للمستخدم {user_id}")
@@ -278,11 +286,12 @@ class MembershipManager:
                 else:
                     raise e
             return True
-        except Exception as e:
+        except (sqlite3.Error, telebot.apihelper.ApiTelegramException) as e:
             logger.error(f"خطأ في إرسال رسالة الترحيب: {str(e)}")
             return False
     
     @staticmethod
+    @retrying.retry(stop_max_attempt_number=3, wait_fixed=2000)
     def notify_expired_memberships(bot_instance, db_manager):
         """إرسال إشعارات للأعضاء المنتهية عضويتهم"""
         try:
@@ -315,11 +324,11 @@ class MembershipManager:
                     )
                     logger.info(f"تم إرسال إشعار للأدمن عن انتهاء عضوية {member['user_id']}")
                     
-                except Exception as e:
+                except telebot.apihelper.ApiTelegramException as e:
                     logger.error(f"خطأ في إرسال إشعار للمسؤول: {str(e)}")
             
             return True
-        except Exception as e:
+        except sqlite3.Error as e:
             logger.error(f"خطأ في إشعارات العضويات المنتهية: {str(e)}")
             return False
 
@@ -367,10 +376,15 @@ def generate_codes(message, group_id):
     
     try:
         num_codes = int(message.text.strip())
-        if num_codes <= 0:
-            bot.reply_to(message, "يرجى إدخال عدد صحيح أكبر من 0.")
+        if num_codes <= 0 or num_codes > 100:  # تحديد الحد الأقصى
+            bot.reply_to(message, "يرجى إدخال عدد صحيح بين 1 و100.")
             return
         
+        success, message_text = BotPermissions.check_bot_permissions(bot, group_id)
+        if not success:
+            bot.reply_to(message, message_text)
+            return
+            
         codes = CodeGenerator.generate_multiple_codes(db_manager, group_id, num_codes)
         if not codes:
             bot.reply_to(message, "حدث خطأ أثناء توليد الأكواد. يرجى المحاولة مرة أخرى.")
@@ -392,6 +406,10 @@ def generate_codes(message, group_id):
 
 def show_codes(message):
     """عرض الأكواد"""
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "غير مصرح لك باستخدام هذا الأمر!")
+        return
+        
     try:
         used_codes = db_manager.execute_query(
             """SELECT code, user_id, created_at 
@@ -427,17 +445,21 @@ def show_codes(message):
             msg += "لا توجد أكواد مستخدمة"
         
         bot.reply_to(message, msg, parse_mode='Markdown')
-    except Exception as e:
-        bot.reply_to(message, f"حدث خطأ: {str(e)}")
+    except sqlite3.Error as e:
+        bot.reply_to(message, f"خطأ في قاعدة البيانات: {str(e)}")
         logger.error(f"خطأ في عرض الأكواد: {str(e)}")
 
 def check_code(message):
     """التحقق من الكود المدخل من المستخدم"""
     code = message.text.strip().upper()
     user_id = message.from_user.id
-    username = message.from_user.first_name or "عضو جديد"
+    username = message.from_user.first_name or message.from_user.username or "عضو جديد"
     logger.info(f"الكود المدخل من المستخدم {user_id}: {code}")
     
+    if not code or len(code) != 8 or not code.isalnum():
+        bot.reply_to(message, f"عذرًا {username}!\nالكود غير صالح. يجب أن يكون 8 أحرف أو أرقام. يرجى المحاولة مرة أخرى.")
+        return
+        
     success, result = MembershipManager.process_code(bot, db_manager, user_id, code)
     
     if success:
@@ -474,8 +496,8 @@ def set_welcome(message):
         )
         bot.reply_to(message, f"تم تحديث رسالة الترحيب للمجموعة {APPROVED_GROUP_ID} بنجاح!")
         logger.info(f"تم تحديث رسالة الترحيب للمجموعة {APPROVED_GROUP_ID} إلى: {welcome_msg}")
-    except Exception as e:
-        bot.reply_to(message, f"خطأ: {str(e)}")
+    except sqlite3.Error as e:
+        bot.reply_to(message, f"خطأ في قاعدة البيانات: {str(e)}")
         logger.error(f"خطأ في تعيين رسالة الترحيب: {str(e)}")
 
 @bot.message_handler(content_types=['new_chat_members'])
@@ -486,61 +508,68 @@ def handle_new_member(message):
         if str(chat_id) != APPROVED_GROUP_ID:
             return
             
+        success, message_text = BotPermissions.check_bot_permissions(bot, chat_id)
+        if not success:
+            bot.send_message(ADMIN_ID, f"خطأ في الصلاحيات بالمجموعة {chat_id}: {message_text}")
+            return
+            
         for new_member in message.new_chat_members:
             user_id = new_member.id
             logger.info(f"عضو جديد تمت إضافته إلى المجموعة: {user_id}")
             
-            # إرسال رسالة الترحيب
             MembershipManager.send_welcome_message(bot, db_manager, chat_id, user_id)
             
-    except Exception as e:
+    except telebot.apihelper.ApiTelegramException as e:
         logger.error(f"خطأ في معالجة العضو الجديد: {str(e)}")
 
-# ===== الوظائف الخلفية =====
-
+@retrying.retry(stop_max_attempt_number=5, wait_fixed=3600000)  # إعادة المحاولة كل ساعة
 def check_expired_memberships():
     """فحص العضويات المنتهية الصلاحية"""
-    while True:
-        try:
-            now = datetime.now()
-            
-            expired_members = db_manager.execute_query(
-                "SELECT user_id, group_id FROM memberships WHERE join_date < ?",
-                ((now - timedelta(days=30)).isoformat(),),
-                fetch=True
-            )
-            
-            for member in expired_members:
-                if str(member['group_id']) != APPROVED_GROUP_ID:
-                    continue
-                try:
-                    bot.kick_chat_member(member['group_id'], member['user_id'])
+    try:
+        now = datetime.now()
+        
+        expired_members = db_manager.execute_query(
+            "SELECT user_id, group_id FROM memberships WHERE join_date < ?",
+            ((now - timedelta(days=30)).isoformat(),),
+            fetch=True
+        )
+        
+        for member in expired_members:
+            if str(member['group_id']) != APPROVED_GROUP_ID:
+                continue
+            try:
+                bot.kick_chat_member(member['group_id'], member['user_id'])
+                db_manager.execute_query(
+                    "DELETE FROM memberships WHERE user_id = ? AND group_id = ?",
+                    (member['user_id'], member['group_id'])
+                )
+                logger.info(f"تم إزالة العضو المنتهية عضويته {member['user_id']} من المجموعة {member['group_id']}")
+            except telebot.apihelper.ApiTelegramException as e:
+                if "user not found" in str(e).lower():
+                    logger.warning(f"العضو {member['user_id']} غير موجود في المجموعة {member['group_id']}")
                     db_manager.execute_query(
                         "DELETE FROM memberships WHERE user_id = ? AND group_id = ?",
                         (member['user_id'], member['group_id'])
                     )
-                    logger.info(f"تم إزالة العضو المنتهية عضويته {member['user_id']} من المجموعة {member['group_id']}")
-                except telebot.apihelper.ApiTelegramException as e:
-                    if "user not found" in str(e).lower():
-                        logger.warning(f"العضو {member['user_id']} غير موجود في المجموعة {member['group_id']}")
-                        db_manager.execute_query(
-                            "DELETE FROM memberships WHERE user_id = ? AND group_id = ?",
-                            (member['user_id'], member['group_id'])
-                        )
-                    else:
-                        logger.error(f"خطأ في طرد العضو {member['user_id']}: {str(e)}")
-            
-            MembershipManager.notify_expired_memberships(bot, db_manager)
-            
-            time.sleep(3600)  # التحقق كل ساعة
-            
-        except Exception as e:
-            logger.error(f"خطأ في الفحص الخلفي: {str(e)}")
-            time.sleep(3600)
+                else:
+                    logger.error(f"خطأ في طرد العضو {member['user_id']}: {str(e)}")
+        
+        MembershipManager.notify_expired_memberships(bot, db_manager)
+        
+    except (sqlite3.Error, telebot.apihelper.ApiTelegramException) as e:
+        logger.error(f"خطأ في الفحص الخلفي: {str(e)}")
+        raise
 
 # بدء البوت
 if __name__ == '__main__':
     try:
+        # التحقق من صلاحيات البوت عند البدء
+        success, message = BotPermissions.check_bot_permissions(bot, APPROVED_GROUP_ID)
+        if not success:
+            logger.error(f"فشل التحقق من الصلاحيات: {message}")
+            bot.send_message(ADMIN_ID, f"فشل التحقق من الصلاحيات: {message}")
+            sys.exit(1)
+            
         # بدء الفحص الخلفي في خيط منفصل
         bg_thread = threading.Thread(target=check_expired_memberships, daemon=True)
         bg_thread.start()
@@ -553,4 +582,5 @@ if __name__ == '__main__':
         sys.exit(0)
     except Exception as e:
         logger.error(f"خطأ غير متوقع: {str(e)}")
+        bot.send_message(ADMIN_ID, f"خطأ غير متوقع: {str(e)}")
         sys.exit(1)
