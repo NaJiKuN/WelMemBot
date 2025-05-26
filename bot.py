@@ -1,4 +1,4 @@
-# X2.6
+# x2.7
 import telegram
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, ConversationHandler, CallbackQueryHandler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -12,8 +12,11 @@ ADMIN_ID = 764559466
 CODES_FILE = 'codes.json'
 
 # حالات المحادثة
-GROUP_ID, NUM_CODES = range(2)
-CODE = range(1)
+ADMIN_WAITING_FOR_BUTTON = 'admin_waiting_for_button'
+ADMIN_ASK_GROUP_ID = 'admin_ask_group_id'
+ADMIN_ASK_NUM_CODES = 'admin_ask_num_codes'
+USER_WAITING_FOR_BUTTON = 'user_waiting_for_button'
+USER_ASK_CODE = 'user_ask_code'
 
 # دالة لتوليد الأكواد
 def generate_code(length=10):
@@ -28,86 +31,92 @@ def add_codes(group_id, num_codes):
             data = json.load(f)
     except FileNotFoundError:
         data = {}
-    if group_id not in data:
-        data[group_id] = []
-    data[group_id].extend(codes)
+    group_id_str = str(group_id)
+    if group_id_str not in data:
+        data[group_id_str] = []
+    data[group_id_str].extend(codes)
     with open(CODES_FILE, 'w') as f:
         json.dump(data, f)
     return codes
 
-# دالة للتحقق من الأكواد
-def check_code(group_id, code):
+# دالة للتحقق من الأكواد وإزالتها بعد الاستخدام
+def find_and_remove_code(code):
     try:
         with open(CODES_FILE, 'r') as f:
             data = json.load(f)
-        if group_id in data and code in data[group_id]:
+    except FileNotFoundError:
+        return None
+    for group_id, codes in data.items():
+        if code in codes:
             data[group_id].remove(code)
             with open(CODES_FILE, 'w') as f:
                 json.dump(data, f)
-            return True
-    except FileNotFoundError:
-        pass
-    return False
+            return group_id
+    return None
 
 # دالة لإضافة المستخدم إلى المجموعة
 def add_user_to_group(bot, user_id, group_id):
-    bot.add_chat_member(group_id, user_id)
+    bot.add_chat_member(chat_id=group_id, user_id=user_id)
 
 # دالة لإرسال رسالة الترحيب
 def send_welcome_message(bot, group_id, user_name):
     message = f"Welcome, {user_name}!\nYour membership will automatically expire in one month.\nPlease adhere to the group rules and avoid leaving before the specified period to prevent suspension."
-    bot.send_message(group_id, message)
+    bot.send_message(chat_id=group_id, text=message)
 
-# دوال المسؤول
-def start_admin(update, context):
-    if update.message.from_user.id != ADMIN_ID:
-        update.message.reply_text('You are not authorized to use this bot.')
-        return ConversationHandler.END
-    
-    keyboard = [[InlineKeyboardButton("Generate Codes", callback_data='generate')]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    update.message.reply_text('Welcome, admin! What would you like to do?', reply_markup=reply_markup)
-    return GROUP_ID
+# دالة بدء المحادثة
+def start(update, context):
+    if update.message.from_user.id == ADMIN_ID:
+        keyboard = [[InlineKeyboardButton("Generate Codes", callback_data='generate')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        update.message.reply_text('Welcome, admin! What would you like to do?', reply_markup=reply_markup)
+        return ADMIN_WAITING_FOR_BUTTON
+    else:
+        keyboard = [[InlineKeyboardButton("Enter Code", callback_data='enter_code')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        update.message.reply_text('Welcome to WelMemBot! Please enter your code to join the group:', reply_markup=reply_markup)
+        return USER_WAITING_FOR_BUTTON
 
-def group_id_input(update, context):
+# دالة لمعالجة الأزرار
+def button(update, context):
     query = update.callback_query
     query.answer()
-    query.edit_message_text('Please enter the group ID (e.g., -1002329495586):')
-    return GROUP_ID
+    if query.data == 'generate':
+        if query.from_user.id == ADMIN_ID:
+            query.edit_message_text(text='Please enter the group ID (e.g., -1002329495586):')
+            return ADMIN_ASK_GROUP_ID
+        else:
+            query.edit_message_text(text='You are not authorized.')
+            return ConversationHandler.END
+    elif query.data == 'enter_code':
+        query.edit_message_text(text='Please enter your code:')
+        return USER_ASK_CODE
 
-def group_id(update, context):
+# دالة لاستلام معرف المجموعة من المسؤول
+def get_group_id(update, context):
     group_id = update.message.text
     context.user_data['group_id'] = group_id
     update.message.reply_text('Please enter the number of codes to generate:')
-    return NUM_CODES
+    return ADMIN_ASK_NUM_CODES
 
-def num_codes(update, context):
-    num_codes = int(update.message.text)
+# دالة لاستلام عدد الأكواد من المسؤول
+def get_num_codes(update, context):
+    try:
+        num_codes = int(update.message.text)
+    except ValueError:
+        update.message.reply_text('Please enter a valid number.')
+        return ADMIN_ASK_NUM_CODES
     group_id = context.user_data['group_id']
     codes = add_codes(group_id, num_codes)
     update.message.reply_text(f'{num_codes} codes have been generated for group {group_id}:\n' + '\n'.join(codes))
     return ConversationHandler.END
 
-# دوال المستخدم
-def start_user(update, context):
-    keyboard = [[InlineKeyboardButton("Enter Code", callback_data='enter_code')]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    update.message.reply_text('Welcome to WelMemBot! Please enter your code to join the group:', reply_markup=reply_markup)
-    return CODE
-
-def code_request(update, context):
-    query = update.callback_query
-    query.answer()
-    query.edit_message_text('Please enter your code:')
-    return CODE
-
-def code_input(update, context):
+# دالة لاستلام الكود من المستخدم
+def get_code(update, context):
     code = update.message.text
     user_id = update.message.from_user.id
-    # للتبسيط، نفترض مجموعة واحدة. يمكن تعديلها لدعم مجموعات متعددة.
-    group_id = '-1002329495586'
-    
-    if check_code(group_id, code):
+    group_id_str = find_and_remove_code(code)
+    if group_id_str:
+        group_id = int(group_id_str)
         add_user_to_group(context.bot, user_id, group_id)
         user_name = update.message.from_user.first_name
         send_welcome_message(context.bot, group_id, user_name)
@@ -116,42 +125,23 @@ def code_input(update, context):
         update.message.reply_text('The entered code is incorrect. Please try entering the code correctly.')
     return ConversationHandler.END
 
-# معالجة استجابات الأزرار
-def button(update, context):
-    query = update.callback_query
-    if query.data == 'generate':
-        return group_id_input(update, context)
-    elif query.data == 'enter_code':
-        return code_request(update, context)
-
-# إعداد ConversationHandler للمسؤول
-admin_conv = ConversationHandler(
-    entry_points=[CommandHandler('start', start_admin)],
+# إعداد ConversationHandler
+conv_handler = ConversationHandler(
+    entry_points=[CommandHandler('start', start)],
     states={
-        GROUP_ID: [MessageHandler(Filters.text & ~Filters.command, group_id)],
-        NUM_CODES: [MessageHandler(Filters.text & ~Filters.command, num_codes)]
+        ADMIN_WAITING_FOR_BUTTON: [CallbackQueryHandler(button)],
+        ADMIN_ASK_GROUP_ID: [MessageHandler(Filters.text & ~Filters.command, get_group_id)],
+        ADMIN_ASK_NUM_CODES: [MessageHandler(Filters.text & ~Filters.command, get_num_codes)],
+        USER_WAITING_FOR_BUTTON: [CallbackQueryHandler(button)],
+        USER_ASK_CODE: [MessageHandler(Filters.text & ~Filters.command, get_code)],
     },
-    fallbacks=[]
+    fallbacks=[],
 )
 
-# إعداد ConversationHandler للمستخدمين
-user_conv = ConversationHandler(
-    entry_points=[CommandHandler('start', start_user)],
-    states={
-        CODE: [MessageHandler(Filters.text & ~Filters.command, code_input)]
-    },
-    fallbacks=[]
-)
-
-# إعداد Updater و Dispatcher
-updater = Updater(TOKEN, use_context=True)
-dp = updater.dispatcher
-
-# إضافة المعالجات
-dp.add_handler(admin_conv)
-dp.add_handler(user_conv)
-dp.add_handler(CallbackQueryHandler(button))
-
-# بدء البوت
-updater.start_polling()
-updater.idle()
+# الجزء الرئيسي لتشغيل البوت
+if __name__ == '__main__':
+    updater = Updater(TOKEN, use_context=True)
+    dp = updater.dispatcher
+    dp.add_handler(conv_handler)
+    updater.start_polling()
+    updater.idle()
