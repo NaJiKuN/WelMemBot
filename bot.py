@@ -1,4 +1,4 @@
-# x1.6
+# x1.7
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import sqlite3
@@ -171,19 +171,31 @@ class InviteManager:
     def create_invite_link(bot_instance, group_id, user_id, code):
         """إنشاء رابط دعوة مؤقت"""
         try:
-            expire_date = int(time.time()) + 86400
+            logger.info(f"محاولة إنشاء رابط دعوة للمجموعة {group_id} بواسطة المستخدم {user_id} باستخدام الكود {code}")
+            expire_date = int(time.time()) + 86400  # 24 ساعة
             link = bot_instance.create_chat_invite_link(
                 chat_id=group_id,
                 name=f"Invite_{code}",
                 expire_date=expire_date,
                 member_limit=1
             )
-            return link.invite_link, expire_date
+            logger.info(f"تم إنشاء رابط الدعوة بنجاح: {link.invite_link}")
+            return link.invite_link, expire_date, None
         except telebot.apihelper.ApiTelegramException as e:
-            logger.error(f"خطأ في إنشاء رابط الدعوة: {str(e)}")
-            if "privacy settings" in str(e).lower():
+            logger.error(f"خطأ في API تيليجرام أثناء إنشاء رابط الدعوة: {str(e)}")
+            error_msg = str(e).lower()
+            if "need administrator rights" in error_msg or "chat invite link" in error_msg:
+                return None, None, "البوت يحتاج صلاحية إضافة أعضاء (can_invite_users) لإنشاء رابط دعوة"
+            elif "privacy settings" in error_msg:
                 return None, None, "يرجى تعطيل إعدادات الخصوصية في @BotFather باستخدام /setprivacy -> Disabled"
-            return None, None, f"خطأ في إنشاء رابط الدعوة: {str(e)}"
+            elif "chat not found" in error_msg:
+                return None, None, "المجموعة غير موجودة أو المعرف غير صحيح"
+            elif "bot is not a member" in error_msg:
+                return None, None, "البوت ليس عضواً في المجموعة"
+            return None, None, f"خطأ في API تيليجرام: {str(e)}"
+        except Exception as e:
+            logger.error(f"خطأ غير متوقع أثناء إنشاء رابط الدعوة: {str(e)}")
+            return None, None, f"خطأ غير متوقع: {str(e)}"
     
     @staticmethod
     def store_invite_link(db_manager, link_data):
@@ -195,6 +207,7 @@ class InviteManager:
                 VALUES (?, ?, ?, ?, ?, ?)""",
                 link_data
             )
+            logger.info(f"تم تخزين رابط الدعوة بنجاح: {link_data[0]}")
             return True
         except Exception as e:
             logger.error(f"خطأ في تخزين رابط الدعوة: {str(e)}")
@@ -229,6 +242,7 @@ class MembershipManager:
     def process_code(bot_instance, db_manager, user_id, code):
         """معالجة الكود وإرسال رابط الدعوة"""
         try:
+            logger.info(f"معالجة الكود {code} للمستخدم {user_id}")
             result = db_manager.execute_query(
                 """SELECT group_id FROM codes 
                 WHERE code = ? AND used = 0""",
@@ -237,13 +251,16 @@ class MembershipManager:
             )
             
             if not result:
+                logger.warning(f"الكود {code} غير صالح أو مستخدم من قبل")
                 return False, "الكود غير صالح أو مستخدم من قبل"
             
             group_id = result[0]['group_id']
+            logger.info(f"الكود {code} مرتبط بالمجموعة {group_id}")
             
             try:
                 member = bot_instance.get_chat_member(group_id, user_id)
                 if member.status in ['member', 'administrator', 'creator']:
+                    logger.info(f"المستخدم {user_id} بالفعل عضو في المجموعة {group_id}")
                     return False, "أنت بالفعل عضو في المجموعة!"
             except telebot.apihelper.ApiTelegramException as e:
                 if "user not found" not in str(e).lower():
@@ -252,12 +269,14 @@ class MembershipManager:
             
             success, msg = BotPermissions.check_bot_permissions(bot_instance, group_id)
             if not success:
+                logger.warning(f"فشل في التحقق من الصلاحيات للمجموعة {group_id}: {msg}")
                 return False, msg
             
             invite_link, expire_time, error_msg = InviteManager.create_invite_link(
                 bot_instance, group_id, user_id, code)
             
             if not invite_link:
+                logger.error(f"فشل في إنشاء رابط الدعوة: {error_msg}")
                 return False, error_msg or "فشل في إنشاء رابط الدعوة"
             
             link_data = (
@@ -265,13 +284,15 @@ class MembershipManager:
                 datetime.now().isoformat(), expire_time
             )
             if not InviteManager.store_invite_link(db_manager, link_data):
+                logger.error("فشل في حفظ رابط الدعوة")
                 return False, "فشل في حفظ رابط الدعوة"
             
             db_manager.execute_query(
-                """UPDATE codes SET user_id = ? 
+                """UPDATE codes SET user_id = ?, used = 1 
                 WHERE code = ?""",
                 (user_id, code)
             )
+            logger.info(f"تم تحديث الكود {code} كمستخدم من قبل {user_id}")
             
             return True, invite_link
             
@@ -304,9 +325,11 @@ Please adhere to the group rules and avoid leaving before the specified period t
             
             try:
                 bot_instance.send_message(chat_id, welcome_msg)
+                logger.info(f"تم إرسال رسالة الترحيب إلى المجموعة {chat_id} للمستخدم {user_id}")
             except telebot.apihelper.ApiTelegramException as e:
                 if "can't send messages" in str(e).lower():
                     bot_instance.send_message(ADMIN_ID, f"لا يمكنني إرسال رسائل في المجموعة {chat_id}. رسالة الترحيب لـ {username}:\n{welcome_msg}")
+                    logger.warning(f"لا يمكن إرسال رسائل في المجموعة {chat_id}. تم إرسال رسالة الترحيب إلى الأدمن.")
                 else:
                     raise e
             return True
@@ -343,6 +366,7 @@ Please adhere to the group rules and avoid leaving before the specified period t
                         WHERE user_id = ? AND group_id = ?""",
                         (member['user_id'], member['group_id'])
                     )
+                    logger.info(f"تم إرسال إشعار للأدمن عن انتهاء عضوية {member['user_id']}")
                     
                 except Exception as e:
                     logger.error(f"خطأ في إرسال إشعار للمسؤول: {str(e)}")
@@ -550,8 +574,10 @@ def check_code(message):
                     f"مرحبًا {username}!\n\n"
                     f"رابط الانضمام إلى المجموعة (صالح لمدة 24 ساعة):\n{result}\n\n"
                     "سيتم إنهاء عضويتك بعد شهر تلقائيًا.")
+        logger.info(f"تم إرسال رابط الدعوة للمستخدم {user_id}")
     else:
         bot.reply_to(message, f"عذرًا {username}!\n{result}\nيرجى المحاولة لاحقًا أو التواصل مع المسؤول.")
+        logger.warning(f"فشل في معالجة الكود {code} للمستخدم {user_id}: {result}")
 
 @bot.message_handler(commands=['set_welcome'])
 def set_welcome(message):
