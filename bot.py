@@ -1,4 +1,4 @@
-# V3.9
+# V4.0
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import sqlite3
@@ -220,9 +220,11 @@ class MembershipManager:
                 if "user is already a participant" in error_msg:
                     logger.info(f"المستخدم {user_id} بالفعل عضو في المجموعة {group_id}")
                     return False, "أنت بالفعل عضو في المجموعة!"
+                elif "not enough rights" in error_msg:
+                    return False, "البوت لا يملك الصلاحيات الكافية في المجموعة"
                 else:
                     logger.error(f"خطأ في إنشاء رابط الدعوة: {str(e)}")
-                    return False, f"حدث خطأ أثناء إنشاء رابط الدعوة: {str(e)}"
+                    return False, f"حدث خطأ: {str(e)}"
             
         except Exception as e:
             logger.error(f"خطأ في معالجة الكود: {str(e)}")
