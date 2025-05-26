@@ -1,4 +1,4 @@
-# v3.8
+# V3.9
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import sqlite3
@@ -176,7 +176,7 @@ class MembershipManager:
     """فئة لإدارة العضويات"""
     @staticmethod
     def process_code(bot_instance, db_manager, user_id, code):
-        """معالجة الكود وإضافة العضو"""
+        """معالجة الكود وإرسال رابط الدعوة"""
         try:
             logger.info(f"معالجة الكود {code} للمستخدم {user_id}")
             result = db_manager.execute_query(
@@ -198,13 +198,13 @@ class MembershipManager:
             logger.info(f"الكود {code} مرتبط بالمجموعة {group_id}")
             
             try:
-                # إضافة المستخدم مباشرة إلى المجموعة
-                bot_instance.add_chat_member(
+                # إنشاء رابط دعوة بدلاً من الإضافة المباشرة
+                invite_link = bot_instance.create_chat_invite_link(
                     chat_id=group_id,
-                    user_id=user_id,
-                    can_send_messages=True
+                    name=f"Invite_{code}",
+                    member_limit=1,
+                    expire_date=int(time.time()) + 86400  # 24 ساعة
                 )
-                logger.info(f"تمت إضافة المستخدم {user_id} إلى المجموعة {group_id}")
                 
                 # تحديث حالة الكود
                 db_manager.execute_query(
@@ -213,15 +213,7 @@ class MembershipManager:
                     (user_id, code)
                 )
                 
-                # تسجيل العضوية في قاعدة البيانات
-                db_manager.execute_query(
-                    """INSERT OR REPLACE INTO memberships 
-                    (user_id, group_id, join_date) 
-                    VALUES (?, ?, ?)""",
-                    (user_id, group_id, datetime.now().isoformat())
-                )
-                
-                return True, "تمت إضافتك إلى المجموعة بنجاح! تحقق من الرسائل في المجموعة."
+                return True, invite_link.invite_link
                 
             except telebot.apihelper.ApiTelegramException as e:
                 error_msg = str(e).lower()
@@ -229,8 +221,8 @@ class MembershipManager:
                     logger.info(f"المستخدم {user_id} بالفعل عضو في المجموعة {group_id}")
                     return False, "أنت بالفعل عضو في المجموعة!"
                 else:
-                    logger.error(f"خطأ في إضافة المستخدم: {str(e)}")
-                    return False, f"حدث خطأ أثناء إضافتك إلى المجموعة: {str(e)}"
+                    logger.error(f"خطأ في إنشاء رابط الدعوة: {str(e)}")
+                    return False, f"حدث خطأ أثناء إنشاء رابط الدعوة: {str(e)}"
             
         except Exception as e:
             logger.error(f"خطأ في معالجة الكود: {str(e)}")
@@ -258,6 +250,20 @@ class MembershipManager:
             
             # استبدال {username} باسم المستخدم
             welcome_msg = welcome_msg_template.format(username=username)
+            
+            # تسجيل العضوية في قاعدة البيانات
+            existing = db_manager.execute_query(
+                "SELECT 1 FROM memberships WHERE user_id = ? AND group_id = ?",
+                (user_id, str(chat_id)),
+                fetch=True
+            )
+            if not existing:
+                db_manager.execute_query(
+                    """INSERT INTO memberships 
+                    (user_id, group_id, join_date) 
+                    VALUES (?, ?, ?)""",
+                    (user_id, str(chat_id), datetime.now().isoformat())
+                )
             
             # محاولة إرسال الرسالة الترحيبية
             try:
@@ -433,10 +439,11 @@ def check_code(message):
     success, result = MembershipManager.process_code(bot, db_manager, user_id, code)
     
     if success:
-        # إرسال رسالة الترحيب بعد الإضافة الناجحة
-        MembershipManager.send_welcome_message(bot, db_manager, APPROVED_GROUP_ID, user_id)
-        bot.reply_to(message, result)
-        logger.info(f"تمت معالجة الكود بنجاح للمستخدم {user_id}")
+        bot.reply_to(message, 
+                    f"مرحبًا {username}!\n\n"
+                    f"رابط الانضمام إلى المجموعة (صالح لمدة 24 ساعة):\n{result}\n\n"
+                    "انقر على الرابط للانضمام إلى المجموعة.")
+        logger.info(f"تم إرسال رابط الدعوة للمستخدم {user_id}")
     else:
         bot.reply_to(message, f"عذرًا {username}!\n{result}\nيرجى المحاولة لاحقًا أو التواصل مع المسؤول.")
         logger.warning(f"فشل في معالجة الكود {code} للمستخدم {user_id}: {result}")
