@@ -1,4 +1,4 @@
-# x1.9
+# x2.0
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import sqlite3
@@ -17,7 +17,7 @@ ADMIN_ID = 764559466
 DB_PATH = '/home/ec2-user/projects/WelMemBot/codes.db'
 LOG_FILE = '/home/ec2-user/projects/WelMemBot/bot.log'
 
-# قائمة المجموعات المعتمدة (يمكن تحديثها يدويًا أو عبر أمر لاحقاً)
+# قائمة المجموعات المعتمدة
 APPROVED_GROUP_IDS = ['-1002329495586']
 
 # إعداد التسجيل (Logging)
@@ -38,6 +38,7 @@ class DatabaseManager:
     def __init__(self, db_path):
         self.db_path = db_path
         self._init_db()
+        self._setup_default_groups()
     
     def _init_db(self):
         """تهيئة قاعدة البيانات"""
@@ -78,6 +79,18 @@ class DatabaseManager:
             logger.error(f"خطأ في تهيئة قاعدة البيانات: {str(e)}")
             raise
     
+    def _setup_default_groups(self):
+        """إعداد المجموعات المعتمدة مسبقًا"""
+        try:
+            for group_id in APPROVED_GROUP_IDS:
+                self.execute_query(
+                    "INSERT OR IGNORE INTO groups (group_id, welcome_message, is_private) VALUES (?, ?, ?)",
+                    (group_id, "🎉 مرحبًا بك، {username}!\n📅 عضويتك ستنتهي بعد شهر تلقائيًا.\n📜 يرجى الالتزام بقواعد المجموعة وتجنب المغادرة قبل المدة المحددة لتجنب الإيقاف.", 1)
+                )
+            logger.info("تم إعداد المجموعات المعتمدة مسبقًا بنجاح")
+        except Exception as e:
+            logger.error(f"خطأ في إعداد المجموعات المعتمدة: {str(e)}")
+    
     def execute_query(self, query, params=(), fetch=False):
         """تنفيذ استعلام على قاعدة البيانات"""
         try:
@@ -109,6 +122,7 @@ class BotPermissions:
             required_permissions = {
                 'can_invite_users': bot_member.can_invite_users if hasattr(bot_member, 'can_invite_users') else False,
                 'can_restrict_members': bot_member.can_restrict_members if hasattr(bot_member, 'can_restrict_members') else False,
+                'can_send_messages': bot_member.can_send_messages if hasattr(bot_member, 'can_send_messages') else False,
                 'status': bot_member.status
             }
             
@@ -123,6 +137,8 @@ class BotPermissions:
                 missing_permissions.append("إضافة أعضاء")
             if not required_permissions['can_restrict_members']:
                 missing_permissions.append("حظر أعضاء")
+            if not required_permissions['can_send_messages']:
+                missing_permissions.append("إرسال رسائل")
                 
             if missing_permissions:
                 error_msg = f"البوت يحتاج الصلاحيات التالية: {', '.join(missing_permissions)}"
@@ -699,6 +715,7 @@ def handle_new_member(update):
                         )
                         logger.info(f"تم استخدام الكود {code} ورابط الدعوة بواسطة العضو {user_id}")
             
+            # إرسال الرسالة الترحيبية فور الانضمام
             MembershipManager.send_welcome_message(bot, db_manager, chat_id, user_id)
             
     except Exception as e:
