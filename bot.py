@@ -1,4 +1,4 @@
-# x2.2
+# v3.7
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import sqlite3
@@ -17,8 +17,8 @@ ADMIN_ID = 764559466
 DB_PATH = '/home/ec2-user/projects/WelMemBot/codes.db'
 LOG_FILE = '/home/ec2-user/projects/WelMemBot/bot.log'
 
-# قائمة المجموعات المعتمدة
-APPROVED_GROUP_IDS = ['-1002329495586']
+# المجموعة المعتمدة (تم تحديدها حسب طلبك)
+APPROVED_GROUP_ID = '-1002329495586'
 
 # إعداد التسجيل (Logging)
 logging.basicConfig(
@@ -38,7 +38,7 @@ class DatabaseManager:
     def __init__(self, db_path):
         self.db_path = db_path
         self._init_db()
-        self._setup_default_groups()
+        self._setup_default_group()
     
     def _init_db(self):
         """تهيئة قاعدة البيانات"""
@@ -79,17 +79,16 @@ class DatabaseManager:
             logger.error(f"خطأ في تهيئة قاعدة البيانات: {str(e)}")
             raise
     
-    def _setup_default_groups(self):
-        """إعداد المجموعات المعتمدة مسبقًا"""
+    def _setup_default_group(self):
+        """إعداد المجموعة المعتمدة مسبقًا"""
         try:
-            for group_id in APPROVED_GROUP_IDS:
-                self.execute_query(
-                    "INSERT OR IGNORE INTO groups (group_id, welcome_message, is_private) VALUES (?, ?, ?)",
-                    (group_id, "🎉 مرحبًا بك، {username}!\n📅 عضويتك ستنتهي بعد شهر تلقائيًا.\n📜 يرجى الالتزام بقواعد المجموعة وتجنب المغادرة قبل المدة المحددة لتجنب الإيقاف.", 1)
-                )
-            logger.info("تم إعداد المجموعات المعتمدة مسبقًا بنجاح")
+            self.execute_query(
+                "INSERT OR IGNORE INTO groups (group_id, welcome_message, is_private) VALUES (?, ?, ?)",
+                (APPROVED_GROUP_ID, "🎉 مرحبًا بك، {username}!\n📅 عضويتك ستنتهي بعد شهر تلقائيًا.\n📜 يرجى الالتزام بقواعد المجموعة وتجنب المغادرة قبل المدة المحددة لتجنب الإيقاف.", 1)
+            )
+            logger.info("تم إعداد المجموعة المعتمدة مسبقًا بنجاح")
         except Exception as e:
-            logger.error(f"خطأ في إعداد المجموعات المعتمدة: {str(e)}")
+            logger.error(f"خطأ في إعداد المجموعة المعتمدة: {str(e)}")
     
     def execute_query(self, query, params=(), fetch=False):
         """تنفيذ استعلام على قاعدة البيانات"""
@@ -112,16 +111,16 @@ class BotPermissions:
     def check_bot_permissions(bot_instance, chat_id):
         """التحقق من صلاحيات البوت في المجموعة"""
         try:
-            if str(chat_id) not in APPROVED_GROUP_IDS:
+            if str(chat_id) != APPROVED_GROUP_ID:
                 logger.warning(f"المجموعة {chat_id} غير معتمدة")
-                return False, "هذه المجموعة غير معتمدة. تواصل مع المسؤول للاعتماد."
+                return False, "هذه المجموعة غير معتمدة"
             
             chat = bot_instance.get_chat(chat_id)
             bot_member = bot_instance.get_chat_member(chat_id, bot_instance.get_me().id)
             
             required_permissions = {
                 'can_invite_users': bot_member.can_invite_users if hasattr(bot_member, 'can_invite_users') else False,
-                'can_restrict_members': bot_member.can_restrict_members if hasattr(bot_member, 'can_restrict_members') else False,
+                'can_send_messages': True,  # تم طلب تفعيل هذه الصلاحية
                 'status': bot_member.status
             }
             
@@ -131,16 +130,9 @@ class BotPermissions:
                 logger.warning(f"البوت ليس مشرفًا في المجموعة {chat_id}")
                 return False, "البوت يجب أن يكون مشرفاً في المجموعة"
                 
-            missing_permissions = []
             if not required_permissions['can_invite_users']:
-                missing_permissions.append("إضافة أعضاء")
-            if not required_permissions['can_restrict_members']:
-                missing_permissions.append("حظر أعضاء")
-                
-            if missing_permissions:
-                error_msg = f"البوت يحتاج الصلاحيات التالية: {', '.join(missing_permissions)}"
-                logger.warning(error_msg)
-                return False, error_msg
+                logger.warning("البوت لا يملك صلاحية إضافة أعضاء")
+                return False, "البوت يحتاج صلاحية إضافة أعضاء"
                 
             return True, "الصلاحيات كافية"
             
@@ -167,7 +159,7 @@ class CodeGenerator:
     @staticmethod
     def generate_multiple_codes(db_manager, group_id, count):
         """توليد عدة أكواد للمجموعة"""
-        if str(group_id) not in APPROVED_GROUP_IDS:
+        if str(group_id) != APPROVED_GROUP_ID:
             logger.error(f"محاولة توليد أكواد لمجموعة غير معتمدة: {group_id}")
             return []
         
@@ -194,7 +186,7 @@ class InviteManager:
     @staticmethod
     def create_invite_link(bot_instance, group_id, user_id, code):
         """إنشاء رابط دعوة مؤقت"""
-        if str(group_id) not in APPROVED_GROUP_IDS:
+        if str(group_id) != APPROVED_GROUP_ID:
             logger.error(f"محاولة إنشاء رابط دعوة لمجموعة غير معتمدة: {group_id}")
             return None, None, "المجموعة غير معتمدة"
         
@@ -283,7 +275,7 @@ class MembershipManager:
                 return False, "الكود غير صالح أو مستخدم من قبل"
             
             group_id = result[0]['group_id']
-            if str(group_id) not in APPROVED_GROUP_IDS:
+            if str(group_id) != APPROVED_GROUP_ID:
                 logger.error(f"محاولة معالجة كود لمجموعة غير معتمدة: {group_id}")
                 return False, "المجموعة غير معتمدة. تواصل مع المسؤول."
             
@@ -336,12 +328,13 @@ class MembershipManager:
     def send_welcome_message(bot_instance, db_manager, chat_id, user_id):
         """إرسال رسالة ترحيبية عند الانضمام"""
         try:
-            if str(chat_id) not in APPROVED_GROUP_IDS:
+            if str(chat_id) != APPROVED_GROUP_ID:
                 logger.warning(f"محاولة إرسال رسالة ترحيب لمجموعة غير معتمدة: {chat_id}")
                 return False
             
             user = bot_instance.get_chat(user_id)
             username = user.first_name or user.username or f"User_{user_id}"
+            
             # جلب الرسالة الترحيبية من قاعدة البيانات
             welcome_result = db_manager.execute_query(
                 "SELECT welcome_message FROM groups WHERE group_id = ?",
@@ -395,7 +388,7 @@ class MembershipManager:
             
             for member in expired_members:
                 try:
-                    if str(member['group_id']) not in APPROVED_GROUP_IDS:
+                    if str(member['group_id']) != APPROVED_GROUP_ID:
                         continue
                     user = bot_instance.get_chat(member['user_id'])
                     username = user.first_name or user.username or f"User_{member['user_id']}"
@@ -448,64 +441,20 @@ def handle_callback(call):
     """معالجة الأزرار"""
     try:
         if call.data == "generate_codes":
-            bot.send_message(call.message.chat.id, "أدخل معرف المجموعة:")
-            bot.register_next_step_handler(call.message, get_group_id)
+            bot.send_message(call.message.chat.id, f"سيتم إنشاء الأكواد للمجموعة {APPROVED_GROUP_ID}. أدخل عدد الأكواد المطلوبة:")
+            bot.register_next_step_handler(call.message, lambda m: generate_codes(m, APPROVED_GROUP_ID))
         elif call.data == "show_codes_links":
             show_codes_links(call.message)
-        elif call.data.startswith("group_"):
-            group_id = call.data.split("_")[1]
-            show_group_links(call.message, group_id)
             
         bot.answer_callback_query(call.id)
     except Exception as e:
         logger.error(f"خطأ في معالجة الأزرار: {str(e)}")
         bot.answer_callback_query(call.id, "حدث خطأ، يرجى المحاولة لاحقًا")
 
-def get_group_id(message):
-    """الحصول على معرف المجموعة من الأدمن"""
-    if message.from_user.id != ADMIN_ID:
-        bot.reply_to(message, "غير مصرح لك باستخدام هذا الأمر!")
-        return
-    
-    group_id = message.text.strip()
-    logger.info(f"معرف المجموعة المدخل: {group_id}")
-    
-    try:
-        if not group_id.startswith('-100'):
-            bot.reply_to(message, "معرف المجموعة غير صالح! يجب أن يبدأ بـ -100.")
-            return
-            
-        if str(group_id) not in APPROVED_GROUP_IDS:
-            bot.reply_to(message, f"معرف المجموعة {group_id} غير معتمد. تواصل مع المطور لإضافته إلى القائمة المعتمدة.")
-            return
-            
-        chat = bot.get_chat(group_id)
-        
-        success, msg = BotPermissions.check_bot_permissions(bot, group_id)
-        if not success:
-            bot.reply_to(message, f"خطأ في الصلاحيات: {msg}")
-            return
-        
-        db_manager.execute_query(
-            "INSERT OR REPLACE INTO groups (group_id, welcome_message, is_private) VALUES (?, ?, ?)",
-            (group_id, "🎉 مرحبًا بك، {username}!\n📅 عضويتك ستنتهي بعد شهر تلقائيًا.\n📜 يرجى الالتزام بقواعد المجموعة وتجنب المغادرة قبل المدة المحددة لتجنب الإيقاف.", int(chat.type in ['group', 'supergroup']))
-        )
-        
-        bot.reply_to(message, f"تم تحديد المجموعة {chat.title} (ID: {group_id}). أدخل عدد الأكواد المطلوبة:")
-        bot.register_next_step_handler(message, lambda m: generate_codes(m, group_id))
-        
-    except Exception as e:
-        bot.reply_to(message, f"خطأ: {str(e)}")
-        logger.error(f"خطأ في الحصول على معرف المجموعة: {str(e)}")
-
 def generate_codes(message, group_id):
     """توليد الأكواد للمجموعة"""
     if message.from_user.id != ADMIN_ID:
         bot.reply_to(message, "غير مصرح لك باستخدام هذا الأمر!")
-        return
-    
-    if str(group_id) not in APPROVED_GROUP_IDS:
-        bot.reply_to(message, f"المجموعة {group_id} غير معتمدة. تواصل مع المطور لإضافتها.")
         return
     
     try:
@@ -536,41 +485,12 @@ def generate_codes(message, group_id):
 def show_codes_links(message):
     """عرض الأكواد والروابط"""
     try:
-        groups = db_manager.execute_query(
-            "SELECT group_id FROM groups",
-            fetch=True
-        )
-        
-        if not groups:
-            bot.reply_to(message, "لا توجد مجموعات مسجلة.")
-            return
-            
-        markup = InlineKeyboardMarkup()
-        for group in groups:
-            if str(group['group_id']) in APPROVED_GROUP_IDS:
-                markup.add(InlineKeyboardButton(
-                    f"المجموعة {group['group_id']}",
-                    callback_data=f"group_{group['group_id']}")
-                )
-        
-        bot.reply_to(message, "اختر المجموعة لعرض الأكواد والروابط:", reply_markup=markup)
-    except Exception as e:
-        bot.reply_to(message, f"حدث خطأ: {str(e)}")
-        logger.error(f"خطأ في عرض الأكواد والروابط: {str(e)}")
-
-def show_group_links(message, group_id):
-    """عرض روابط وأكواد مجموعة محددة"""
-    if str(group_id) not in APPROVED_GROUP_IDS:
-        bot.reply_to(message, f"المجموعة {group_id} غير معتمدة.")
-        return
-    
-    try:
         used_codes = db_manager.execute_query(
             """SELECT code, user_id, created_at 
             FROM codes 
             WHERE group_id = ? AND used = 1
             ORDER BY created_at DESC""",
-            (group_id,),
+            (APPROVED_GROUP_ID,),
             fetch=True
         )
         
@@ -579,13 +499,13 @@ def show_group_links(message, group_id):
             FROM codes 
             WHERE group_id = ? AND used = 0
             ORDER BY created_at DESC""",
-            (group_id,),
+            (APPROVED_GROUP_ID,),
             fetch=True
         )
         
-        invite_links = InviteManager.get_invite_links(db_manager, group_id)
+        invite_links = InviteManager.get_invite_links(db_manager, APPROVED_GROUP_ID)
         
-        msg = f"معلومات المجموعة {group_id}:\n\n"
+        msg = f"معلومات المجموعة {APPROVED_GROUP_ID}:\n\n"
         
         msg += "📌 الأكواد غير المستخدمة:\n"
         if unused_codes:
@@ -646,36 +566,24 @@ def set_welcome(message):
         return
     
     try:
-        if message.chat.type in ['group', 'supergroup']:
-            group_id = str(message.chat.id)
-            welcome_msg = message.text.split(maxsplit=1)[1] if len(message.text.split()) > 1 else ""
-        else:
-            parts = message.text.split(maxsplit=2)
-            if len(parts) < 3:
-                bot.reply_to(message, 
-                            "يرجى إدخال معرف المجموعة ورسالة الترحيب!\n"
-                            "مثال: /set_welcome -1002329495586 🎉 مرحبًا بك، {username}!\n"
-                            "📅 عضويتك ستنتهي بعد شهر.\n📜 يرجى الالتزام بقواعد المجموعة.\n"
-                            "يمكن استخدام {username} لاستبدال اسم العضو تلقائيًا.")
-                return
-            group_id, welcome_msg = parts[1], parts[2]
-        
-        if str(group_id) not in APPROVED_GROUP_IDS:
-            bot.reply_to(message, f"المجموعة {group_id} غير معتمدة. أضفها إلى القائمة المعتمدة أولاً.")
-            return
+        welcome_msg = message.text.split(maxsplit=1)[1] if len(message.text.split()) > 1 else ""
         
         if not welcome_msg:
-            bot.reply_to(message, "يرجى إدخال نص الرسالة الترحيبية!")
+            bot.reply_to(message, 
+                        "يرجى إدخال رسالة الترحيب!\n"
+                        "مثال: /set_welcome 🎉 مرحبًا بك، {username}!\n"
+                        "📅 عضويتك ستنتهي بعد شهر.\n📜 يرجى الالتزام بقواعد المجموعة.\n"
+                        "يمكن استخدام {username} لاستبدال اسم العضو تلقائيًا.")
             return
         
         db_manager.execute_query(
             "INSERT OR REPLACE INTO groups (group_id, welcome_message) VALUES (?, ?)",
-            (group_id, welcome_msg)
+            (APPROVED_GROUP_ID, welcome_msg)
         )
-        bot.reply_to(message, f"تم تحديث رسالة الترحيب للمجموعة {group_id} بنجاح!")
-        logger.info(f"تم تحديث رسالة الترحيب للمجموعة {group_id} إلى: {welcome_msg}")
+        bot.reply_to(message, f"تم تحديث رسالة الترحيب للمجموعة {APPROVED_GROUP_ID} بنجاح!")
+        logger.info(f"تم تحديث رسالة الترحيب للمجموعة {APPROVED_GROUP_ID} إلى: {welcome_msg}")
     except Exception as e:
-        bot.reply_to(message, f"خطأ: {str(e)}\nاستخدم:\n- داخل المجموعة: /set_welcome <رسالة الترحيب>\n- خارج المجموعة: /set_welcome <group_id> <رسالة الترحيب>")
+        bot.reply_to(message, f"خطأ: {str(e)}")
         logger.error(f"خطأ في تعيين رسالة الترحيب: {str(e)}")
 
 # معالج للعضوية الجديدة
@@ -687,7 +595,7 @@ def handle_new_member(update):
             chat_id = update.chat.id
             user_id = update.new_chat_member.user.id
             
-            if str(chat_id) not in APPROVED_GROUP_IDS:
+            if str(chat_id) != APPROVED_GROUP_ID:
                 logger.warning(f"محاولة معالجة عضوية في مجموعة غير معتمدة: {chat_id}")
                 return
             
@@ -746,8 +654,6 @@ def check_expired_links_and_memberships():
             )
             
             for member in expired_members:
-                if str(member['group_id']) not in APPROVED_GROUP_IDS:
-                    continue
                 try:
                     bot.kick_chat_member(member['group_id'], member['user_id'])
                     db_manager.execute_query(
