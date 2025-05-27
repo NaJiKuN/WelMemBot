@@ -3,20 +3,20 @@ import telebot
 import json
 import os
 import uuid
-import time # لإضافة تأخير بسيط عند الحاجة
+import time
 from telebot import types
 
 # --- إعدادات البوت ---
 TOKEN = "8034775321:AAHVwntCuBOwDh3NKIPxcs-jGJ9mGq4o0_0"
-ADMIN_ID = 764559466 # معرف المسؤول الرئيسي
-DATA_FILE = "/home/ubuntu/WelMemBot/data.json"
-BOT_DIR = "/home/ubuntu/WelMemBot"
+ADMIN_ID = 764559466
+DATA_FILE = "/home/ec2-user/projects/WelMemBot/data.json"
+BOT_DIR = "/home/ec2-user/projects/WelMemBot"
 
 # --- الرسالة الترحيبية الافتراضية ---
 DEFAULT_WELCOME_MESSAGE = "Welcome, {username}!\nYour membership will automatically expire after one month.\nPlease adhere to the group rules and avoid leaving before the specified period to prevent membership suspension."
 
 # --- تهيئة البوت ---
-bot = telebot.TeleBot(TOKEN, parse_mode='Markdown') # استخدام Markdown افتراضيًا
+bot = telebot.TeleBot(TOKEN, parse_mode='Markdown')
 
 # --- تحميل/إنشاء ملف البيانات ---
 def load_data():
@@ -74,7 +74,7 @@ def get_admin_state(admin_id):
 @bot.message_handler(commands=['start'])
 def handle_start(message):
     user_id = message.from_user.id
-    reset_admin_state(user_id) # إعادة تعيين أي حالة سابقة للمستخدم/المسؤول
+    reset_admin_state(user_id)
 
     if user_id == ADMIN_ID:
         markup = types.InlineKeyboardMarkup(row_width=1)
@@ -85,7 +85,6 @@ def handle_start(message):
         bot.send_message(ADMIN_ID, "أهلاً بك أيها المسؤول! اختر أحد الخيارات:", reply_markup=markup)
     else:
         bot.send_message(user_id, "أهلاً بك! يرجى إرسال كود الدعوة الخاص بك.")
-        # لا نسجل حالة للمستخدم العادي، ننتظر رسالته التالية مباشرة
 
 # --- معالج ردود الأزرار (Callback Query) للمسؤول ---
 @bot.callback_query_handler(func=lambda call: call.from_user.id == ADMIN_ID)
@@ -114,10 +113,10 @@ def handle_admin_callback(call):
             bot.edit_message_text(prompt, admin_id, call.message.message_id, reply_markup=markup)
         except telebot.apihelper.ApiTelegramException as e:
             if "message to edit not found" in str(e):
-                 bot.send_message(admin_id, prompt, reply_markup=markup)
+                bot.send_message(admin_id, prompt, reply_markup=markup)
             elif "message is not modified" not in str(e):
-                 print(f"Error editing message (admin_select_group): {e}")
-                 bot.send_message(admin_id, prompt, reply_markup=markup)
+                print(f"Error editing message (admin_select_group): {e}")
+                bot.send_message(admin_id, prompt, reply_markup=markup)
 
     elif callback_action == "admin_add_new_group":
         prompt = "يرجى إرسال ID المجموعة الجديدة التي تريد إضافتها (مثال: -100123456789)."
@@ -125,10 +124,10 @@ def handle_admin_callback(call):
             bot.edit_message_text(prompt, admin_id, call.message.message_id)
         except telebot.apihelper.ApiTelegramException as e:
             if "message to edit not found" in str(e):
-                 bot.send_message(admin_id, prompt)
+                bot.send_message(admin_id, prompt)
             elif "message is not modified" not in str(e):
-                 print(f"Error editing message (admin_add_new_group): {e}")
-                 bot.send_message(admin_id, prompt)
+                print(f"Error editing message (admin_add_new_group): {e}")
+                bot.send_message(admin_id, prompt)
         set_admin_state(admin_id, "awaiting_group_id")
 
     elif callback_action.startswith("admin_manage_group_"):
@@ -143,11 +142,11 @@ def handle_admin_callback(call):
             try:
                 bot.edit_message_text(prompt, admin_id, call.message.message_id)
             except telebot.apihelper.ApiTelegramException as e:
-                 if "message to edit not found" in str(e):
-                      bot.send_message(admin_id, prompt)
-                 elif "message is not modified" not in str(e):
-                      print(f"Error editing message (admin_manage_codes no groups): {e}")
-                      bot.send_message(admin_id, prompt)
+                if "message to edit not found" in str(e):
+                    bot.send_message(admin_id, prompt)
+                elif "message is not modified" not in str(e):
+                    print(f"Error editing message (admin_manage_codes no groups): {e}")
+                    bot.send_message(admin_id, prompt)
         else:
             markup = types.InlineKeyboardMarkup(row_width=1)
             for group_id_str, group_info in groups.items():
@@ -158,11 +157,11 @@ def handle_admin_callback(call):
             try:
                 bot.edit_message_text(prompt, admin_id, call.message.message_id, reply_markup=markup)
             except telebot.apihelper.ApiTelegramException as e:
-                 if "message to edit not found" in str(e):
-                      bot.send_message(admin_id, prompt, reply_markup=markup)
-                 elif "message is not modified" not in str(e):
-                      print(f"Error editing message (admin_manage_codes select): {e}")
-                      bot.send_message(admin_id, prompt, reply_markup=markup)
+                if "message to edit not found" in str(e):
+                    bot.send_message(admin_id, prompt, reply_markup=markup)
+                elif "message is not modified" not in str(e):
+                    print(f"Error editing message (admin_manage_codes select): {e}")
+                    bot.send_message(admin_id, prompt, reply_markup=markup)
 
     elif callback_action.startswith("admin_manage_codes_for_"):
         group_id_str = callback_action.split("_")[-1]
@@ -178,22 +177,22 @@ def handle_admin_callback(call):
             try:
                 bot.edit_message_text(prompt, admin_id, call.message.message_id)
             except telebot.apihelper.ApiTelegramException as e:
-                 if "message to edit not found" in str(e):
-                      bot.send_message(admin_id, prompt)
-                 elif "message is not modified" not in str(e):
-                      print(f"Error editing message (admin_generate_codes): {e}")
-                      bot.send_message(admin_id, prompt)
+                if "message to edit not found" in str(e):
+                    bot.send_message(admin_id, prompt)
+                elif "message is not modified" not in str(e):
+                    print(f"Error editing message (admin_generate_codes): {e}")
+                    bot.send_message(admin_id, prompt)
             set_admin_state(admin_id, "awaiting_code_count", target_group_id=group_id_str)
         else:
             prompt = "حدث خطأ. يرجى البدء من جديد باختيار مجموعة أولاً."
             try:
                 bot.edit_message_text(prompt, admin_id, call.message.message_id)
             except telebot.apihelper.ApiTelegramException as e:
-                 if "message to edit not found" in str(e):
-                      bot.send_message(admin_id, prompt)
-                 elif "message is not modified" not in str(e):
-                      print(f"Error editing message (admin_generate_codes error): {e}")
-                      bot.send_message(admin_id, prompt)
+                if "message to edit not found" in str(e):
+                    bot.send_message(admin_id, prompt)
+                elif "message is not modified" not in str(e):
+                    print(f"Error editing message (admin_generate_codes error): {e}")
+                    bot.send_message(admin_id, prompt)
             reset_admin_state(admin_id)
 
     elif callback_action == "admin_view_codes":
@@ -206,11 +205,11 @@ def handle_admin_callback(call):
             try:
                 bot.edit_message_text(prompt, admin_id, call.message.message_id)
             except telebot.apihelper.ApiTelegramException as e:
-                 if "message to edit not found" in str(e):
-                      bot.send_message(admin_id, prompt)
-                 elif "message is not modified" not in str(e):
-                      print(f"Error editing message (admin_view_codes error): {e}")
-                      bot.send_message(admin_id, prompt)
+                if "message to edit not found" in str(e):
+                    bot.send_message(admin_id, prompt)
+                elif "message is not modified" not in str(e):
+                    print(f"Error editing message (admin_view_codes error): {e}")
+                    bot.send_message(admin_id, prompt)
             reset_admin_state(admin_id)
 
     elif callback_action == "admin_set_welcome":
@@ -220,10 +219,10 @@ def handle_admin_callback(call):
             bot.edit_message_text(prompt, admin_id, call.message.message_id, parse_mode='Markdown')
         except telebot.apihelper.ApiTelegramException as e:
             if "message to edit not found" in str(e):
-                 bot.send_message(admin_id, prompt, parse_mode='Markdown')
+                bot.send_message(admin_id, prompt, parse_mode='Markdown')
             elif "message is not modified" not in str(e):
-                 print(f"Error editing message (admin_set_welcome): {e}")
-                 bot.send_message(admin_id, prompt, parse_mode='Markdown')
+                print(f"Error editing message (admin_set_welcome): {e}")
+                bot.send_message(admin_id, prompt, parse_mode='Markdown')
         set_admin_state(admin_id, "awaiting_welcome_message")
 
     elif callback_action == "admin_back_to_main":
@@ -237,11 +236,11 @@ def handle_admin_callback(call):
         try:
             bot.edit_message_text(prompt, admin_id, call.message.message_id, reply_markup=markup)
         except telebot.apihelper.ApiTelegramException as e:
-             if "message to edit not found" in str(e):
-                  bot.send_message(admin_id, prompt, reply_markup=markup)
-             elif "message is not modified" not in str(e):
-                 print(f"Error editing message (admin_back_to_main): {e}")
-                 bot.send_message(admin_id, prompt, reply_markup=markup)
+            if "message to edit not found" in str(e):
+                bot.send_message(admin_id, prompt, reply_markup=markup)
+            elif "message is not modified" not in str(e):
+                print(f"Error editing message (admin_back_to_main): {e}")
+                bot.send_message(admin_id, prompt, reply_markup=markup)
 
 # --- دالة عرض خيارات إدارة مجموعة محددة ---
 def show_group_management_options(admin_id, message_id, group_id_str):
@@ -252,11 +251,11 @@ def show_group_management_options(admin_id, message_id, group_id_str):
         try:
             bot.edit_message_text(prompt, admin_id, message_id)
         except telebot.apihelper.ApiTelegramException as e:
-             if "message to edit not found" in str(e):
-                  bot.send_message(admin_id, prompt)
-             elif "message is not modified" not in str(e):
-                  print(f"Error editing message (show_group_management_options group missing): {e}")
-                  bot.send_message(admin_id, prompt)
+            if "message to edit not found" in str(e):
+                bot.send_message(admin_id, prompt)
+            elif "message is not modified" not in str(e):
+                print(f"Error editing message (show_group_management_options group missing): {e}")
+                bot.send_message(admin_id, prompt)
         reset_admin_state(admin_id)
         return
 
@@ -271,10 +270,10 @@ def show_group_management_options(admin_id, message_id, group_id_str):
         bot.edit_message_text(prompt, admin_id, message_id, reply_markup=markup)
     except telebot.apihelper.ApiTelegramException as e:
         if "message to edit not found" in str(e):
-             bot.send_message(admin_id, prompt, reply_markup=markup)
+            bot.send_message(admin_id, prompt, reply_markup=markup)
         elif "message is not modified" not in str(e):
-             print(f"Error editing message (show_group_management_options): {e}")
-             bot.send_message(admin_id, prompt, reply_markup=markup)
+            print(f"Error editing message (show_group_management_options): {e}")
+            bot.send_message(admin_id, prompt, reply_markup=markup)
 
 # --- دالة عرض الأكواد لمجموعة محددة ---
 def display_codes_for_group(admin_id, message_id, group_id_str):
@@ -291,10 +290,10 @@ def display_codes_for_group(admin_id, message_id, group_id_str):
             bot.edit_message_text(prompt, admin_id, message_id, reply_markup=markup)
         except telebot.apihelper.ApiTelegramException as e:
             if "message to edit not found" in str(e):
-                 bot.send_message(admin_id, prompt, reply_markup=markup)
+                bot.send_message(admin_id, prompt, reply_markup=markup)
             elif "message is not modified" not in str(e):
-                 print(f"Error editing message (display_codes_for_group no codes): {e}")
-                 bot.send_message(admin_id, prompt, reply_markup=markup)
+                print(f"Error editing message (display_codes_for_group no codes): {e}")
+                bot.send_message(admin_id, prompt, reply_markup=markup)
         return
 
     codes = group_info["codes"]
@@ -334,11 +333,11 @@ def display_codes_for_group(admin_id, message_id, group_id_str):
         try:
             bot.edit_message_text(response_text, admin_id, message_id, reply_markup=markup, parse_mode='Markdown')
         except telebot.apihelper.ApiTelegramException as e:
-             if "message to edit not found" in str(e):
-                  bot.send_message(admin_id, response_text, reply_markup=markup, parse_mode='Markdown')
-             elif "message is not modified" not in str(e):
-                 print(f"Error editing message (display_codes_for_group): {e}")
-                 bot.send_message(admin_id, response_text, reply_markup=markup, parse_mode='Markdown')
+            if "message to edit not found" in str(e):
+                bot.send_message(admin_id, response_text, reply_markup=markup, parse_mode='Markdown')
+            elif "message is not modified" not in str(e):
+                print(f"Error editing message (display_codes_for_group): {e}")
+                bot.send_message(admin_id, response_text, reply_markup=markup, parse_mode='Markdown')
 
 # --- معالج الرسائل النصية (للردود من المسؤول) ---
 @bot.message_handler(func=lambda message: get_admin_state(message.from_user.id) is not None and message.from_user.id == ADMIN_ID, content_types=['text'])
@@ -353,21 +352,20 @@ def handle_admin_messages(message):
             group_id_str = message.text.strip()
             if not group_id_str.startswith("-100") or not group_id_str[1:].isdigit():
                 raise ValueError("Invalid group ID format.")
-            group_id_int = int(group_id_str) # للتحقق من صلاحية الـ ID
+            group_id_int = int(group_id_str)
 
-            # محاولة الحصول على معلومات المجموعة للتحقق من وجودها وصلاحيات البوت
             try:
-                 chat_info = bot.get_chat(group_id_int)
-                 group_name = chat_info.title if chat_info.title else f"المجموعة {group_id_str}"
-                 print(f"Successfully fetched info for group: {group_name} ({group_id_str})")
+                chat_info = bot.get_chat(group_id_int)
+                group_name = chat_info.title if chat_info.title else f"المجموعة {group_id_str}"
+                print(f"Successfully fetched info for group: {group_name} ({group_id_str})")
             except telebot.apihelper.ApiTelegramException as e:
-                 bot.send_message(admin_id, f"لم أتمكن من الوصول للمجموعة {group_id_str}. تأكد من أن البوت عضو في المجموعة وأن الـ ID صحيح. الخطأ: {e}")
-                 return # لا نغير الحالة
+                bot.send_message(admin_id, f"لم أتمكن من الوصول للمجموعة {group_id_str}. تأكد من أن البوت عضو في المجموعة وأن الـ ID صحيح. الخطأ: {e}")
+                return
 
             if group_id_str in data.get("groups", {}):
-                 bot.send_message(admin_id, f"المجموعة *{group_name}* ({group_id_str}) موجودة بالفعل.")
-                 set_admin_state(admin_id, "managing_group", target_group_id=group_id_str)
-                 show_group_management_options(admin_id, message.message_id + 1, group_id_str)
+                bot.send_message(admin_id, f"المجموعة *{group_name}* ({group_id_str}) موجودة بالفعل.")
+                set_admin_state(admin_id, "managing_group", target_group_id=group_id_str)
+                show_group_management_options(admin_id, message.message_id + 1, group_id_str)
             else:
                 if "groups" not in data: data["groups"] = {}
                 data["groups"][group_id_str] = {"codes": {}, "name": group_name}
@@ -385,7 +383,7 @@ def handle_admin_messages(message):
     elif action == "awaiting_code_count":
         try:
             count = int(message.text.strip())
-            if count <= 0 or count > 500: # تخفيض الحد الأقصى لتجنب المشاكل
+            if count <= 0 or count > 500:
                 raise ValueError("Invalid code count.")
 
             group_id_str = state.get("target_group_id")
@@ -401,27 +399,27 @@ def handle_admin_messages(message):
                 all_codes_ever.update(g_info.get("codes", {}).keys())
 
             attempts = 0
-            max_attempts = count * 3 # محاولات إضافية لتجنب التكرار
+            max_attempts = count * 3
             while len(generated_codes) < count and attempts < max_attempts:
                 new_code = str(uuid.uuid4())[:8]
                 if new_code not in all_codes_ever:
                     data["groups"][group_id_str]["codes"][new_code] = {"status": "new"}
                     generated_codes.append(new_code)
-                    all_codes_ever.add(new_code) # أضفه للمجموعة المستخدمة في هذه الجلسة
+                    all_codes_ever.add(new_code)
                 attempts += 1
 
             save_data(data)
             actual_count = len(generated_codes)
             if actual_count == count:
-                 bot.send_message(admin_id, f"تم توليد {actual_count} أكواد جديدة بنجاح لـ *{group_name}*.")
+                bot.send_message(admin_id, f"تم توليد {actual_count} أكواد جديدة بنجاح لـ *{group_name}*.")
             else:
-                 bot.send_message(admin_id, f"تم توليد {actual_count} أكواد جديدة فقط لـ *{group_name}* (من أصل {count} مطلوبة) بسبب محاولة تجنب التكرار.")
+                bot.send_message(admin_id, f"تم توليد {actual_count} أكواد جديدة فقط لـ *{group_name}* (من أصل {count} مطلوبة) بسبب محاولة تجنب التكرار.")
 
-            if actual_count > 0 and actual_count <= 20: # عرض الأكواد إذا كانت قليلة
-                 codes_text = "\n".join([f"`/copy {code}`" for code in generated_codes])
-                 bot.send_message(admin_id, f"الأكواد الجديدة:\n{codes_text}", parse_mode='Markdown')
+            if actual_count > 0 and actual_count <= 20:
+                codes_text = "\n".join([f"`/copy {code}`" for code in generated_codes])
+                bot.send_message(admin_id, f"الأكواد الجديدة:\n{codes_text}", parse_mode='Markdown')
             elif actual_count > 20:
-                 bot.send_message(admin_id, "يمكنك عرض جميع الأكواد من خيار 'عرض الأكواد الحالية'.")
+                bot.send_message(admin_id, "يمكنك عرض جميع الأكواد من خيار 'عرض الأكواد الحالية'.")
 
             set_admin_state(admin_id, "managing_group", target_group_id=group_id_str)
             show_group_management_options(admin_id, message.message_id + 1, group_id_str)
@@ -437,15 +435,14 @@ def handle_admin_messages(message):
         if not new_welcome_message:
             bot.send_message(admin_id, "لا يمكن تعيين رسالة ترحيب فارغة. حاول مرة أخرى.")
             return
-        if len(new_welcome_message) > 1000: # حد لطول الرسالة
-             bot.send_message(admin_id, "رسالة الترحيب طويلة جدًا. يرجى اختصارها.")
-             return
+        if len(new_welcome_message) > 1000:
+            bot.send_message(admin_id, "رسالة الترحيب طويلة جدًا. يرجى اختصارها.")
+            return
 
         data["welcome_message"] = new_welcome_message
         save_data(data)
         bot.send_message(admin_id, f"تم تحديث رسالة الترحيب بنجاح.\nالرسالة الجديدة:\n`{new_welcome_message}`", parse_mode='Markdown')
         reset_admin_state(admin_id)
-        # العودة للقائمة الرئيسية
         markup = types.InlineKeyboardMarkup(row_width=1)
         btn_add_group = types.InlineKeyboardButton("➕ إضافة/اختيار مجموعة", callback_data="admin_select_group")
         btn_manage_codes = types.InlineKeyboardButton("🔑 إدارة الأكواد", callback_data="admin_manage_codes")
@@ -463,7 +460,7 @@ def handle_copy_code(message):
         except IndexError:
             bot.send_message(ADMIN_ID, "استخدام غير صحيح. مثال: `/copy 1a2b3c4d`")
         except Exception as e:
-             bot.send_message(ADMIN_ID, f"حدث خطأ: {e}")
+            bot.send_message(ADMIN_ID, f"حدث خطأ: {e}")
 
 # --- معالج الرسائل النصية العادية (للمستخدمين العاديين الذين يرسلون الكود) ---
 @bot.message_handler(func=lambda message: message.from_user.id != ADMIN_ID and get_admin_state(message.from_user.id) is None, content_types=['text'])
@@ -485,7 +482,6 @@ def handle_user_code(message):
             if code_details.get("status") == "new":
                 code_valid = True
                 target_group_id_str = group_id
-                # تحديث حالة الكود مباشرة
                 code_details["status"] = "used"
                 code_details["user_id"] = user_id
                 code_details["username"] = user_info.username or f"{user_info.first_name} {user_info.last_name or ''}".strip()
@@ -493,14 +489,11 @@ def handle_user_code(message):
                 save_data(data)
                 print(f"Code {entered_code} validated for user {user_id} for group {target_group_id_str}. Status updated.")
             else:
-                # الكود موجود ولكنه مستخدم
                 print(f"Code {entered_code} found but already used by {code_details.get('user_id')}.")
-            break # توقف عن البحث بمجرد العثور على الكود
+            break
 
     if code_valid and target_group_id_str:
         try:
-            # ملاحظة: الإضافة المباشرة غير ممكنة، سننشئ رابط دعوة لمرة واحدة
-            # يتطلب أن يكون البوت مشرفاً في المجموعة ولديه صلاحية إنشاء روابط دعوة
             invite_link = bot.create_chat_invite_link(chat_id=int(target_group_id_str), member_limit=1)
             group_name = data["groups"][target_group_id_str].get('name', target_group_id_str)
             bot.send_message(user_id, f"تم التحقق من الكود بنجاح! ✅\n\nيمكنك الآن الانضمام إلى *{group_name}* عبر هذا الرابط (صالح للاستخدام مرة واحدة فقط وينتهي قريباً):\n{invite_link.invite_link}")
@@ -508,19 +501,14 @@ def handle_user_code(message):
         except telebot.apihelper.ApiTelegramException as e:
             print(f"Error creating invite link for group {target_group_id_str}: {e}")
             bot.send_message(user_id, "حدث خطأ أثناء محاولة إنشاء رابط الدعوة للمجموعة. يرجى التواصل مع المسؤول.")
-            # يجب إعادة حالة الكود إلى 'new' لأن المستخدم لم يتمكن من الحصول على الرابط؟
-            # هذا يعتمد على السياسة المطلوبة. للتبسيط، سنترك الكود مستخدماً.
-            # data["groups"][target_group_id_str]["codes"][entered_code]["status"] = "new"
-            # save_data(data)
         except Exception as e:
             print(f"Unexpected error processing valid code for user {user_id}: {e}")
             bot.send_message(user_id, "حدث خطأ غير متوقع. يرجى المحاولة مرة أخرى أو التواصل مع المسؤول.")
-
-    elif code_found: # الكود موجود ولكنه غير صالح (مستخدم)
-        bot.send_message(user_id, "The entered code is incorrect or has already been used. Please try entering the code correctly.")
+    elif code_found:
+        bot.send_message(user_id, "الكود المدخل غير صحيح أو تم استخدامه مسبقًا. يرجى التحقق من الكود أو طلب كود جديد.")
         print(f"Invalid code message sent to user {user_id} (code used).")
-    else: # الكود غير موجود أصلاً
-        bot.send_message(user_id, "The entered code is incorrect or has already been used. Please try entering the code correctly.")
+    else:
+        bot.send_message(user_id, "الكود المدخل غير موجود. يرجى التحقق من الكود أو التواصل مع المسؤول.")
         print(f"Invalid code message sent to user {user_id} (code not found).")
 
 # --- معالج الأعضاء الجدد في المجموعات التي يديرها البوت ---
@@ -529,51 +517,42 @@ def handle_new_member(message):
     data = load_data()
     chat_id_str = str(message.chat.id)
 
-    # تحقق أولاً إذا كانت هذه المجموعة مُدارة بواسطة البوت
     if chat_id_str not in data.get("groups", {}):
-        return # تجاهل المجموعات غير المسجلة
+        return
 
-    # احصل على الرسالة الترحيبية
     welcome_message_template = data.get("welcome_message", DEFAULT_WELCOME_MESSAGE)
 
-    # رحب بكل عضو جديد انضم في هذه الرسالة
     for new_member in message.new_chat_members:
-        # تجنب الترحيب بالبوت نفسه إذا تمت إضافته
         if new_member.id == bot.get_me().id:
             continue
 
-        user_name = new_member.username or f"{new_member.first_name} {new_member.last_name or ''}".strip()
-        # استبدال {username} في الرسالة
-        welcome_message = welcome_message_template.replace("{username}", f"@{user_name}" if new_member.username else user_name)
+        user_name = f"{new_member.first_name} {new_member.last_name or ''}".strip()
+        welcome_message = welcome_message_template.replace("{username}", user_name)
 
         try:
             bot.send_message(message.chat.id, welcome_message)
             print(f"Sent welcome message to {user_name} in group {chat_id_str}")
         except Exception as e:
             print(f"Error sending welcome message to group {chat_id_str}: {e}")
-            # قد نرسل رسالة للمسؤول لإعلامه بالمشكلة
             try:
-                 bot.send_message(ADMIN_ID, f"فشل إرسال رسالة الترحيب في المجموعة {chat_id_str}. الخطأ: {e}")
+                bot.send_message(ADMIN_ID, f"فشل إرسال رسالة الترحيب في المجموعة {chat_id_str}. الخطأ: {e}")
             except Exception as admin_err:
-                 print(f"Failed to notify admin about welcome message error: {admin_err}")
+                print(f"Failed to notify admin about welcome message error: {admin_err}")
 
 # --- أمر تغيير رسالة الترحيب (للمسؤول فقط) ---
 @bot.message_handler(commands=['set_welcome'])
 def handle_set_welcome_command(message):
-     user_id = message.from_user.id
-     if user_id == ADMIN_ID:
-         current_welcome = data.get("welcome_message", DEFAULT_WELCOME_MESSAGE)
-         bot.send_message(admin_id, f"الرسالة الترحيبية الحالية هي:\n\n`{current_welcome}`\n\nأرسل الرسالة الجديدة الآن. استخدم `{{username}}` ليتم استبدالها باسم المستخدم.", parse_mode='Markdown')
-         set_admin_state(admin_id, "awaiting_welcome_message")
-     else:
-         bot.reply_to(message, "هذا الأمر مخصص للمسؤول فقط.")
+    user_id = message.from_user.id
+    if user_id == ADMIN_ID:
+        current_welcome = data.get("welcome_message", DEFAULT_WELCOME_MESSAGE)
+        bot.send_message(user_id, f"الرسالة الترحيبية الحالية هي:\n\n`{current_welcome}`\n\nأرسل الرسالة الجديدة الآن. استخدم `{{username}}` ليتم استبدالها باسم المستخدم.", parse_mode='Markdown')
+        set_admin_state(user_id, "awaiting_welcome_message")
+    else:
+        bot.reply_to(message, "هذا الأمر مخصص للمسؤول فقط.")
 
 # --- بدء تشغيل البوت ---
 if __name__ == '__main__':
     print("Starting polling...")
-    # مسح الحالات العالقة عند إعادة التشغيل (اختياري ولكن جيد)
-    # data["admin_state"] = {}
-    # save_data(data)
     while True:
         try:
             bot.polling(none_stop=True, interval=0, timeout=20)
@@ -581,4 +560,3 @@ if __name__ == '__main__':
             print(f"ERROR: Polling failed: {e}")
             print("Restarting polling in 10 seconds...")
             time.sleep(10)
-
