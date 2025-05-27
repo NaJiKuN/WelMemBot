@@ -1,305 +1,324 @@
-# -*- coding: utf-8 -*- X3.0
-import telebot
-import json
+#!/usr/bin/env python3 v1.0
 import os
-import uuid
-import time
-import fcntl  # لتأمين الملف
-from telebot import types
-from telebot.apihelper import ApiTelegramException
+import logging
+import json
+import random
+import string
+from datetime import datetime, timedelta
+from telegram import Update, ChatPermissions
+from telegram.ext import (
+    Updater,
+    CommandHandler,
+    MessageHandler,
+    Filters,
+    CallbackContext,
+    ConversationHandler,
+    PicklePersistence,
+)
 
-# --- إعدادات البوت ---
-TOKEN = "8034775321:AAHVwntCuBOwDh3NKIPxcs-jGJ9mGq4o0_0"
+# تهيئة السجل
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO,
+    handlers=[
+        logging.FileHandler('/home/ec2-user/projects/WelMemBot/bot.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# بيانات التكوين
+TOKEN = '8034775321:AAHVwntCuBOwDh3NKIPxcs-jGJ9mGq4o0_0'
+GROUP_ID = -1002329495586
 ADMIN_ID = 764559466
-DATA_FILE = "/home/ubuntu/WelMemBot/data.json"
-BOT_DIR = "/home/ubuntu/WelMemBot"
 
-# --- الرسالة الترحيبية الافتراضية ---
-DEFAULT_WELCOME_MESSAGE = "Welcome, {username}!\nYour membership will automatically expire after one month.\nPlease adhere to the group rules and avoid leaving before the specified period to prevent membership suspension."
+# حالات المحادثة
+GROUP_LINK, NUM_CODES, USER_CODE = range(3)
 
-# --- تهيئة البوت ---
-bot = telebot.TeleBot(TOKEN, parse_mode='Markdown')
+# مسار ملف البيانات المستدامة
+PERSISTENCE_FILE = '/home/ec2-user/projects/WelMemBot/bot_persistence.pickle'
 
-# --- تحميل/إنشاء ملف البيانات مع قفل ---
-def load_data():
-    if not os.path.exists(BOT_DIR):
-        os.makedirs(BOT_DIR)
-    if os.path.exists(DATA_FILE):
-        try:
-            with open(DATA_FILE, 'r', encoding='utf-8') as f:
-                fcntl.flock(f.fileno(), fcntl.LOCK_SH)
-                content = f.read()
-                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-                if not content:
-                    return {"groups": {}, "welcome_message": DEFAULT_WELCOME_MESSAGE, "admin_state": {}, "user_state": {}}
-                return json.loads(content)
-        except json.JSONDecodeError:
-            print(f"Warning: {DATA_FILE} is corrupted or empty. Initializing with default data.")
-            return {"groups": {}, "welcome_message": DEFAULT_WELCOME_MESSAGE, "admin_state": {}, "user_state": {}}
+# تحميل البيانات من ملف JSON (للتوافق مع النسخة السابقة)
+def load_legacy_data():
+    legacy_file = '/home/ec2-user/projects/WelMemBot/bot_data.json'
+    if os.path.exists(legacy_file):
+        with open(legacy_file, 'r') as f:
+            return json.load(f)
+    return None
+
+# معالج الأمر /start
+def start(update: Update, context: CallbackContext) -> int:
+    user = update.effective_user
+    if user.id == ADMIN_ID:
+        update.message.reply_text(
+            "مرحبًا يا مسؤول! 👋\n"
+            "استخدم /generate لإنشاء أكواد دعوة جديدة.\n"
+            "استخدم /stats لعرض إحصائيات الأكواد.\n"
+            "استخدم /broadcast لإرسال رسالة لجميع الأعضاء."
+        )
+        return ConversationHandler.END
     else:
-        return {"groups": {}, "welcome_message": DEFAULT_WELCOME_MESSAGE, "admin_state": {}, "user_state": {}}
+        update.message.reply_text(
+            "مرحبًا! 👋\n"
+            "أدخل كود الدعوة الخاص بك للانضمام إلى المجموعة."
+        )
+        return USER_CODE
 
-def save_data(data):
-    with open(DATA_FILE, 'w', encoding='utf-8') as f:
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-        json.dump(data, f, indent=4, ensure_ascii=False)
-        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+# بدء عملية إنشاء الأكواد
+def generate_codes(update: Update, context: CallbackContext) -> int:
+    if update.effective_user.id != ADMIN_ID:
+        update.message.reply_text("عفواً، هذا الأمر للمسؤولين فقط.")
+        return ConversationHandler.END
+    
+    update.message.reply_text(
+        "أدخل رابط الدعوة للمجموعة:\n"
+        "(يجب أن يكون الرابط بصيغة https://t.me/joinchat/xxxxxx)\n"
+        "أو /cancel للإلغاء"
+    )
+    return GROUP_LINK
 
-# تحميل البيانات عند بدء التشغيل
-data = load_data()
-if "groups" not in data: data["groups"] = {}
-if "welcome_message" not in data: data["welcome_message"] = DEFAULT_WELCOME_MESSAGE
-if "admin_state" not in data: data["admin_state"] = {}
-if "user_state" not in data: data["user_state"] = {}
-save_data(data)
+# معالج رابط الدعوة
+def group_link(update: Update, context: CallbackContext) -> int:
+    link = update.message.text.strip()
+    if not link.startswith('https://t.me/joinchat/'):
+        update.message.reply_text("رابط غير صالح! يرجى إدخال رابط دعوة صالح.")
+        return GROUP_LINK
+    
+    context.user_data['invite_link'] = link
+    update.message.reply_text("كم عدد أكواد الدعوة التي تريد إنشاءها؟ (1-100)\nأو /cancel للإلغاء")
+    return NUM_CODES
 
-print("Bot started...")
-
-# --- وظائف مساعدة لإدارة الحالة ---
-def reset_admin_state(admin_id):
-    admin_id_str = str(admin_id)
-    data = load_data()
-    if admin_id_str in data.get("admin_state", {}):
-        del data["admin_state"][admin_id_str]
-        save_data(data)
-
-def set_admin_state(admin_id, action, target_group_id=None):
-    admin_id_str = str(admin_id)
-    data = load_data()
-    if "admin_state" not in data: data["admin_state"] = {}
-    data["admin_state"][admin_id_str] = {"action": action}
-    if target_group_id:
-        data["admin_state"][admin_id_str]["target_group_id"] = str(target_group_id)
-    save_data(data)
-
-def get_admin_state(admin_id):
-    admin_id_str = str(admin_id)
-    data = load_data()
-    return data.get("admin_state", {}).get(admin_id_str)
-
-def set_user_state(user_id, action):
-    user_id_str = str(user_id)
-    data = load_data()
-    if "user_state" not in data: data["user_state"] = {}
-    data["user_state"][user_id_str] = {"action": action}
-    save_data(data)
-
-def get_user_state(user_id):
-    user_id_str = str(user_id)
-    data = load_data()
-    return data.get("user_state", {}).get(user_id_str)
-
-def reset_user_state(user_id):
-    user_id_str = str(user_id)
-    data = load_data()
-    if user_id_str in data.get("user_state", {}):
-        del data["user_state"][user_id_str]
-        save_data(data)
-
-# --- تقسيم الرسائل الطويلة ---
-def send_long_message(chat_id, text, reply_markup=None, parse_mode='Markdown'):
-    max_length = 4096
-    if len(text) <= max_length:
-        try:
-            bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
-        except ApiTelegramException as e:
-            print(f"Error sending message to {chat_id}: {e}")
-            bot.send_message(chat_id, "حدث خطأ أثناء إرسال الرسالة. يرجى المحاولة لاحقًا.")
-    else:
-        parts = [text[i:i+max_length] for i in range(0, len(text), max_length)]
-        for i, part in enumerate(parts):
-            current_markup = reply_markup if i == len(parts) - 1 else None
-            try:
-                bot.send_message(chat_id, part, reply_markup=current_markup, parse_mode=parse_mode)
-            except ApiTelegramException as e:
-                print(f"Error sending message part {i+1} to {chat_id}: {e}")
-                bot.send_message(chat_id, "حدث خطأ أثناء إرسال جزء من الرسالة.")
-
-# --- معالج الأمر /start ---
-@bot.message_handler(commands=['start'])
-def handle_start(message):
-    user_id = message.from_user.id
-    reset_admin_state(user_id)
-    reset_user_state(user_id)
-
-    if user_id == ADMIN_ID:
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        btn_add_group = types.InlineKeyboardButton("➕ إضافة/اختيار مجموعة", callback_data="admin_select_group")
-        btn_manage_codes = types.InlineKeyboardButton("🔑 إدارة الأكواد", callback_data="admin_manage_codes")
-        btn_set_welcome = types.InlineKeyboardButton("✉️ تغيير رسالة الترحيب", callback_data="admin_set_welcome")
-        markup.add(btn_add_group, btn_manage_codes, btn_set_welcome)
-        bot.send_message(ADMIN_ID, "أهلاً بك أيها المسؤول! اختر أحد الخيارات:", reply_markup=markup)
-    else:
-        set_user_state(user_id, "awaiting_code")
-        bot.send_message(user_id, "أهلاً بك! يرجى إرسال كود الدعوة الخاص بك.")
-
-# --- معالج الأمر /help ---
-@bot.message_handler(commands=['help'])
-def handle_help(message):
-    user_id = message.from_user.id
-    if user_id == ADMIN_ID:
-        bot.reply_to(message, "أوامر المسؤول:\n/start - عرض القائمة الرئيسية\n/set_welcome - تغيير رسالة الترحيب\n/copy <code> - نسخ كود معين")
-    else:
-        bot.reply_to(message, "أهلاً! أرسل كود الدعوة للانضمام إلى المجموعة باستخدام /start ثم إدخال الكود.")
-
-# --- معالج ردود الأزرار للمسؤول ---
-@bot.callback_query_handler(func=lambda call: call.from_user.id == ADMIN_ID)
-def handle_admin_callback(call):
-    data = load_data()
-    admin_id = call.from_user.id
-    callback_action = call.data
-
+# معالج عدد الأكواد
+def num_codes(update: Update, context: CallbackContext) -> int:
     try:
-        bot.answer_callback_query(call.id)
-    except Exception as e:
-        print(f"Error answering callback query: {e}")
+        num = int(update.message.text)
+        if num <= 0 or num > 100:
+            update.message.reply_text("الرجاء إدخال عدد بين 1 و 100.")
+            return NUM_CODES
+    except ValueError:
+        update.message.reply_text("الرجاء إدخال رقم صحيح.")
+        return NUM_CODES
+    
+    invite_link = context.user_data['invite_link']
+    bot_data = context.bot_data
+    
+    # إنشاء الأكواد
+    codes = []
+    for _ in range(num):
+        code = generate_unique_code(bot_data.get('codes', {}))
+        bot_data.setdefault('codes', {})[code] = {
+            'invite_link': invite_link,
+            'created_at': datetime.now().isoformat(),
+            'used': False,
+            'group_id': GROUP_ID
+        }
+        codes.append(code)
+    
+    # حفظ البيانات
+    context.dispatcher.update_persistence()
+    
+    # إرسال الأكواد للمسؤول
+    update.message.reply_text(
+        f"تم إنشاء {num} كود دعوة:\n\n" +
+        "\n".join(codes) +
+        "\n\nيمكن للمستخدمين استخدام هذه الأكواد للانضمام إلى المجموعة."
+    )
+    
+    return ConversationHandler.END
 
-    if callback_action == "admin_select_group":
-        groups = data.get("groups", {})
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        if groups:
-            for group_id_str, group_info in groups.items():
-                group_name = group_info.get('name', f"المجموعة {group_id_str}")
-                btn = types.InlineKeyboardButton(group_name, callback_data=f"admin_manage_group_{group_id_str}")
-                markup.add(btn)
-        btn_add_new = types.InlineKeyboardButton("➕ إضافة مجموعة جديدة", callback_data="admin_add_new_group")
-        markup.add(btn_add_new)
-        prompt = "اختر مجموعة لإدارتها أو أضف مجموعة جديدة:" if groups else "لا توجد مجموعات حالياً. أضف مجموعة جديدة:"
-        try:
-            bot.edit_message_text(prompt, admin_id, call.message.message_id, reply_markup=markup)
-        except ApiTelegramException as e:
-            if "message to edit not found" in str(e):
-                bot.send_message(admin_id, prompt, reply_markup=markup)
-            elif "message is not modified" not in str(e):
-                print(f"Error editing message (admin_select_group): {e}")
-                bot.send_message(admin_id, prompt, reply_markup=markup)
-
-    # ... (باقي معالجات الأزرار بدون تغيير كبير، لكن مع تحسين معالجة الأخطاء)
-
-    elif callback_action == "admin_set_welcome":
-        current_welcome = data.get("welcome_message", DEFAULT_WELCOME_MESSAGE)
-        prompt = f"الرسالة الترحيبية الحالية هي:\n\n`{current_welcome}`\n\nأرسل الرسالة الجديدة الآن. استخدم `{{username}}` ليتم استبدالها باسم المستخدم."
-        try:
-            bot.edit_message_text(prompt, admin_id, call.message.message_id, parse_mode='Markdown')
-        except ApiTelegramException as e:
-            if "message to edit not found" in str(e):
-                bot.send_message(admin_id, prompt, parse_mode='Markdown')
-            elif "message is not modified" not in str(e):
-                print(f"Error editing message (admin_set_welcome): {e}")
-                bot.send_message(admin_id, prompt, parse_mode='Markdown')
-        set_admin_state(admin_id, "awaiting_welcome_message")
-
-# --- معالج الرسائل النصية للمسؤول ---
-@bot.message_handler(func=lambda message: get_admin_state(message.from_user.id) is not None and message.from_user.id == ADMIN_ID, content_types=['text'])
-def handle_admin_messages(message):
-    data = load_data()
-    admin_id = message.from_user.id
-    state = get_admin_state(admin_id)
-    action = state.get("action")
-
-    if action == "awaiting_group_id":
-        try:
-            group_id_str = message.text.strip()
-            if not group_id_str.startswith("-100") or not group_id_str[1:].isdigit():
-                raise ValueError("Invalid group ID format.")
-            group_id_int = int(group_id_str)
-
-            # التحقق من صلاحيات البوت
-            try:
-                chat_info = bot.get_chat(group_id_int)
-                group_name = chat_info.title if chat_info.title else f"المجموعة {group_id_str}"
-                admins = bot.get_chat_administrators(group_id_int)
-                bot_id = bot.get_me().id
-                is_admin = any(admin.user.id == bot_id for admin in admins)
-                if not is_admin:
-                    bot.send_message(admin_id, f"البوت ليس مشرفًا في المجموعة {group_name}. يرجى تعيين البوت كمشرف مع صلاحيات إنشاء روابط الدعوة وإرسال الرسائل.")
-                    return
-            except ApiTelegramException as e:
-                bot.send_message(admin_id, f"لم أتمكن من الوصول إلى المجموعة {group_id_str}. تأكد من أن البوت عضو في المجموعة ولديه الصلاحيات اللازمة. الخطأ: {e}")
-                return
-
-            if group_id_str in data.get("groups", {}):
-                bot.send_message(admin_id, f"المجموعة *{group_name}* ({group_id_str}) موجودة بالفعل.")
-            else:
-                data["groups"][group_id_str] = {"codes": {}, "name": group_name}
-                save_data(data)
-                bot.send_message(admin_id, f"تمت إضافة المجموعة بنجاح: *{group_name}* ({group_id_str})")
-            set_admin_state(admin_id, "managing_group", target_group_id=group_id_str)
-            show_group_management_options(admin_id, message.message_id + 1, group_id_str)
-
-        except ValueError:
-            bot.send_message(admin_id, "معرف المجموعة غير صالح. يجب أن يكون رقمًا ويبدأ بـ -100 (مثال: -100123456789). حاول مرة أخرى.")
-        except Exception as e:
-            bot.send_message(admin_id, f"حدث خطأ غير متوقع عند إضافة المجموعة: {e}. يرجى المحاولة مرة أخرى.")
-            reset_admin_state(admin_id)
-
-    # ... (باقي معالجة الرسائل بدون تغيير كبير)
-
-# --- معالج الرسائل النصية للمستخدمين العاديين ---
-@bot.message_handler(func=lambda message: message.from_user.id != ADMIN_ID and get_user_state(message.from_user.id) is not None, content_types=['text'])
-def handle_user_code(message):
-    user_id = message.from_user.id
-    user_info = message.from_user
-    state = get_user_state(user_id)
-    if state.get("action") != "awaiting_code":
-        bot.send_message(user_id, "يرجى إرسال كود الدعوة باستخدام /start أولاً.")
-        return
-
-    entered_code = message.text.strip()
-    data = load_data()
-    code_found = False
-    code_valid = False
-    target_group_id_str = None
-
-    print(f"User {user_id} ({user_info.username or user_info.first_name}) entered code: {entered_code}")
-
-    for group_id, group_info in data.get("groups", {}):
-        if entered_code in group_info.get("codes", {}):
-            code_found = True
-            code_details = group_info["codes"][entered_code]
-            if code_details.get("status") == "new":
-                code_valid = True
-                target_group_id_str = group_id
-                code_details["status"] = "used"
-                code_details["user_id"] = user_id
-                code_details["username"] = user_info.username or f"{user_info.first_name} {user_info.last_name or ''}".strip()
-                code_details["used_time"] = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
-                save_data(data)
-                print(f"Code {entered_code} validated for user {user_id} for group {target_group_id_str}.")
-            break
-
-    if code_valid and target_group_id_str:
-        try:
-            invite_link = bot.create_chat_invite_link(chat_id=int(target_group_id_str), member_limit=1, expire_date=int(time.time()) + 3600)
-            group_name = data["groups"][target_group_id_str].get('name', target_group_id_str)
-            bot.send_message(user_id, f"تم التحقق من الكود بنجاح! ✅\n\nيمكنك الآن الانضمام إلى *{group_name}* عبر هذا الرابط (صالح لمدة ساعة واحدة فقط):\n{invite_link.invite_link}")
-            print(f"Invite link generated for user {user_id} for group {target_group_id_str}")
-        except ApiTelegramException as e:
-            print(f"Error creating invite link for group {target_group_id_str}: {e}")
-            bot.send_message(user_id, "فشل إنشاء رابط الدعوة. يرجى التواصل مع المسؤول.")
-            bot.send_message(ADMIN_ID, f"فشل إنشاء رابط دعوة للمستخدم {user_id} للمجموعة {target_group_id_str}. الخطأ: {e}")
-            # إعادة الكود إلى حالة "new"
-            data["groups"][target_group_id_str]["codes"][entered_code]["status"] = "new"
-            save_data(data)
-    elif code_found:
-        bot.send_message(user_id, "الكود المدخل غير صحيح أو تم استخدامه مسبقًا. يرجى التحقق من الكود أو طلب كود جديد.")
-    else:
-        bot.send_message(user_id, "الكود المدخل غير موجود. يرجى التحقق من الكود أو التواصل مع المسؤول.")
-
-    reset_user_state(user_id)
-
-# --- بدء تشغيل البوت ---
-if __name__ == '__main__':
-    print("Starting polling...")
+# توليد كود فريد
+def generate_unique_code(existing_codes, length=8):
+    chars = string.ascii_uppercase + string.digits
     while True:
+        code = ''.join(random.choice(chars) for _ in range(length))
+        if code not in existing_codes:
+            return code
+
+# معالج إدخال الكود من قبل المستخدم
+def user_code(update: Update, context: CallbackContext) -> int:
+    code = update.message.text.upper().strip()
+    bot_data = context.bot_data
+    user = update.effective_user
+    
+    if 'used_codes' in bot_data and code in bot_data['used_codes']:
+        update.message.reply_text("هذا الكود تم استخدامه مسبقًا.")
+        return USER_CODE
+    
+    if 'codes' not in bot_data or code not in bot_data['codes']:
+        update.message.reply_text("Invalid code. Please enter a valid code.", quote=True)
+        return USER_CODE
+    
+    code_info = bot_data['codes'][code]
+    
+    try:
+        # إضافة المستخدم إلى المجموعة
+        context.bot.unban_chat_member(
+            chat_id=code_info['group_id'],
+            user_id=user.id
+        )
+        
+        # إرسال رسالة ترحيبية في المجموعة
+        welcome_message = (
+            f"أهلاً وسهلاً بك، {user.first_name}!\n\n"
+            "سيتم إنهاء عضويتك بعد شهر تلقائيًا.\n"
+            "يُرجى الالتزام بآداب المجموعة وتجنب المغادرة قبل المدة المحددة، لتجنب إيقاف العضوية."
+        )
+        
+        context.bot.send_message(
+            chat_id=code_info['group_id'],
+            text=welcome_message
+        )
+        
+        # تحديث البيانات
+        bot_data.setdefault('used_codes', set()).add(code)
+        bot_data['codes'][code]['used'] = True
+        bot_data['codes'][code]['used_by'] = user.id
+        bot_data['codes'][code]['used_at'] = datetime.now().isoformat()
+        bot_data.setdefault('users', {})[user.id] = {
+            'joined_at': datetime.now().isoformat(),
+            'expires_at': (datetime.now() + timedelta(days=30)).isoformat()
+        }
+        context.dispatcher.update_persistence()
+        
+        update.message.reply_text(
+            "تمت إضافتك إلى المجموعة بنجاح! 🎉\n"
+            "يمكنك الآن الذهاب إلى المجموعة."
+        )
+        
+    except Exception as e:
+        logger.error(f"Error adding user to group: {e}", exc_info=True)
+        update.message.reply_text(
+            "حدث خطأ أثناء محاولة إضافتك إلى المجموعة. يرجى المحاولة لاحقًا."
+        )
+    
+    return ConversationHandler.END
+
+# عرض إحصائيات الأكواد
+def stats(update: Update, context: CallbackContext) -> None:
+    if update.effective_user.id != ADMIN_ID:
+        update.message.reply_text("عفواً، هذا الأمر للمسؤولين فقط.")
+        return
+    
+    bot_data = context.bot_data
+    total_codes = len(bot_data.get('codes', {}))
+    used_codes = len(bot_data.get('used_codes', set()))
+    total_users = len(bot_data.get('users', {}))
+    
+    update.message.reply_text(
+        f"📊 إحصائيات البوت:\n\n"
+        f"• إجمالي الأكواد: {total_codes}\n"
+        f"• الأكواد المستخدمة: {used_codes}\n"
+        f"• الأكواد المتاحة: {total_codes - used_codes}\n"
+        f"• الأعضاء المضافين: {total_users}"
+    )
+
+# إرسال رسالة جماعية
+def broadcast(update: Update, context: CallbackContext) -> None:
+    if update.effective_user.id != ADMIN_ID:
+        update.message.reply_text("عفواً، هذا الأمر للمسؤولين فقط.")
+        return
+    
+    if not context.args:
+        update.message.reply_text("الاستخدام: /broadcast <الرسالة>")
+        return
+    
+    message = ' '.join(context.args)
+    bot_data = context.bot_data
+    users = bot_data.get('users', {})
+    
+    if not users:
+        update.message.reply_text("لا يوجد أعضاء لإرسال الرسالة لهم.")
+        return
+    
+    success = 0
+    failures = 0
+    
+    for user_id in users:
         try:
-            bot.polling(none_stop=True, interval=0, timeout=20)
-        except ApiTelegramException as e:
-            print(f"ERROR: Polling failed: {e}")
-            if "Too Many Requests" in str(e):
-                time.sleep(30)
-            else:
-                time.sleep(10)
+            context.bot.send_message(chat_id=user_id, text=message)
+            success += 1
         except Exception as e:
-            print(f"Unexpected error in polling: {e}")
-            time.sleep(10)
+            logger.error(f"Failed to send message to {user_id}: {e}")
+            failures += 1
+    
+    update.message.reply_text(
+        f"تم إرسال الرسالة إلى {success} عضو.\n"
+        f"فشل الإرسال لـ {failures} عضو."
+    )
+
+# إلغاء المحادثة
+def cancel(update: Update, context: CallbackContext) -> int:
+    update.message.reply_text("تم إلغاء العملية.")
+    return ConversationHandler.END
+
+# معالج الأخطاء
+def error_handler(update: Update, context: CallbackContext) -> None:
+    logger.error(msg="حدث خطأ في البوت", exc_info=context.error)
+    
+    if update and update.effective_message:
+        update.effective_message.reply_text(
+            "عذرًا، حدث خطأ غير متوقع. يرجى المحاولة مرة أخرى لاحقًا."
+        )
+
+# الدالة الرئيسية
+def main() -> None:
+    # تهيئة استمرارية البيانات
+    persistence = PicklePersistence(
+        filename=PERSISTENCE_FILE,
+        store_chat_data=False,
+        store_user_data=False,
+        single_file=False
+    )
+    
+    # تحميل البيانات القديمة إذا وجدت
+    legacy_data = load_legacy_data()
+    if legacy_data:
+        persistence.bot_data.update(legacy_data)
+        try:
+            os.rename('/home/ec2-user/projects/WelMemBot/bot_data.json',
+                     '/home/ec2-user/projects/WelMemBot/bot_data.json.backup')
+        except Exception as e:
+            logger.warning(f"Could not rename legacy data file: {e}")
+
+    # إنشاء Updater مع استمرارية البيانات
+    updater = Updater(TOKEN, persistence=persistence, use_context=True)
+
+    # الحصول على dispatcher لتسجيل المعالجات
+    dispatcher = updater.dispatcher
+
+    # معالجات المحادثة للمسؤول
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler('generate', generate_codes)],
+        states={
+            GROUP_LINK: [MessageHandler(Filters.text & ~Filters.command, group_link)],
+            NUM_CODES: [MessageHandler(Filters.text & ~Filters.command, num_codes)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel)],
+    )
+
+    # معالجة إدخال الكود من قبل المستخدم
+    user_code_handler = ConversationHandler(
+        entry_points=[MessageHandler(Filters.text & ~Filters.command, user_code)],
+        states={
+            USER_CODE: [MessageHandler(Filters.text & ~Filters.command, user_code)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel)],
+    )
+
+    # تسجيل المعالجات
+    dispatcher.add_handler(CommandHandler('start', start))
+    dispatcher.add_handler(CommandHandler('stats', stats))
+    dispatcher.add_handler(CommandHandler('broadcast', broadcast, pass_args=True))
+    dispatcher.add_handler(conv_handler)
+    dispatcher.add_handler(user_code_handler)
+
+    # تسجيل معالج الأخطاء
+    dispatcher.add_error_handler(error_handler)
+
+    # بدء البوت
+    updater.start_polling(drop_pending_updates=True)
+    logger.info("Bot started and running...")
+    updater.idle()
+
+if __name__ == '__main__':
+    main()
