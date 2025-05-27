@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*- m1.2
+# -*- coding: utf-8 -*- m1.3
 import telebot
 import json
 import os
@@ -58,8 +58,8 @@ def check_membership_expiry():
             current_time = time.time()
             one_month = 30 * 24 * 60 * 60  # شهر واحد بالثواني (30 يومًا)
             for group_id, group_info in data.get("groups", {}).items():
-                group_name = group_info.get('name', f"المجموعة {group_id}")
-                for code, code_details in group_info.get("codes", {}).items():
+                group_name = group_info.get('name', 'group_id}')
+                for code in group_info.get("codes", {}).items():
                     if code_details.get("status") == "used" and "join_date" in code_details:
                         join_date = code_details["join_date"]
                         if current_time - join_date >= one_month:
@@ -73,7 +73,7 @@ def check_membership_expiry():
                                 print(f"Sent expiry notification for user {user_id} in group {group_id}")
                             except Exception as e:
                                 print(f"Failed to send expiry notification for user {user_id} in group {group_id}: {e}")
-                            # تحديث حالة الكود للإشارة إلى انتهاء المدة
+                            # تحديث حالة الكود للإشارة إلى إلى انتهاء المدة
                             code_details["status"] = "expired"
                             save_data(data)
         except Exception as e:
@@ -346,14 +346,14 @@ def display_codes_for_group(admin_id, message_id, group_id_str):
 
     response_text += f"\n🔴 *أكواد مستخدمة ({len(used_codes)}):*\n"
     if used_codes:
-        used_list = "\n".join([f"`{code}` (بواسطة: {info.get('user_id', 'N/A')} بتاريخ: {info.get('used_time', 'N/A')})" for code, info in used_codes.items()])
+        used_list = "\n".join([f"`{code}` (بواسطة: {info.get('username', 'N/A')}، ID: {info.get('user_id', 'N/A')} بتاريخ: {info.get('used_time', 'N/A')})" for code, info in used_codes.items()])
         response_text += used_list + "\n"
     else:
         response_text += "_(لا توجد أكواد مستخدمة)_\n"
 
     response_text += f"\n⚪ *أكواد منتهية ({len(expired_codes)}):*\n"
     if expired_codes:
-        expired_list = "\n".join([f"`{code}` (بواسطة: {info.get('user_id', 'N/A')} بتاريخ: {info.get('used_time', 'N/A')})" for code, info in expired_codes.items()])
+        expired_list = "\n".join([f"`{code}` (بواسطة: {info.get('username', 'N/A')}، ID: {info.get('user_id', 'N/A')} بتاريخ: {info.get('used_time', 'N/A')})" for code, info in expired_codes.items()])
         response_text += expired_list + "\n"
     else:
         response_text += "_(لا توجد أكواد منتهية)_\n"
@@ -529,7 +529,7 @@ def handle_user_code(message):
                 code_details["user_id"] = user_id
                 code_details["username"] = user_info.username or f"{user_info.first_name} {user_info.last_name or ''}".strip()
                 code_details["used_time"] = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
-                code_details["join_date"] = time.time()  # إضافة تاريخ الانضمام
+                code_details["join_date"] = time.time()
                 save_data(data)
                 print(f"Code {entered_code} validated for user {user_id} for group {target_group_id_str}. Status updated.")
             else:
