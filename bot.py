@@ -1,187 +1,176 @@
-# x2.8
-import sqlite3
-import random
-import string
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-from telegram.error import TelegramError
+#!/usr/bin/env python3
+# bot.py v4.1
 
-# إعدادات البوت
+import os
+import json
+import logging
+from uuid import uuid4
+from telegram import __version__ as TG_VER
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    ConversationHandler,
+    MessageHandler,
+    filters,
+    CallbackQueryHandler,
+)
+
+# تهيئة الإعدادات
 TOKEN = "8034775321:AAHVwntCuBOwDh3NKIPxcs-jGJ9mGq4o0_0"
 ADMIN_ID = 764559466
-BOT_USERNAME = "@WelMemBot"
+DATA_FILE = "/home/ec2-user/projects/WelMemBot/data.json"
 
-# إعداد قاعدة البيانات
-def init_db():
-    conn = sqlite3.connect('/home/ec2-user/projects/WelMemBot/bot.db')
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS codes 
-                 (code TEXT PRIMARY KEY, group_id TEXT, used INTEGER)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS groups 
-                 (group_id TEXT PRIMARY KEY)''')
-    conn.commit()
-    conn.close()
+# حالات المحادثة
+GET_GROUP_ID, GET_CODES_COUNT = range(2)
 
-# توليد كود عشوائي
-def generate_code(length=8):
-    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
+# تهيئة التسجيل
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-# التحقق من حالة المسؤول
-def is_admin(user_id):
-    return user_id == ADMIN_ID
+def load_data():
+    """تحميل البيانات من الملف"""
+    if not os.path.exists(DATA_FILE):
+        return {"groups": {}, "codes": {}}
+    
+    with open(DATA_FILE, "r") as f:
+        return json.load(f)
 
-# معالجة الأمر /start
+def save_data(data):
+    """حفظ البيانات في الملف"""
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f, indent=4)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    keyboard = []
-
-    if is_admin(user_id):
-        keyboard = [
-            [InlineKeyboardButton("إنشاء أكواد", callback_data='generate_codes')],
-            [InlineKeyboardButton("عرض الأكواد", callback_data='show_codes')],
-        ]
+    """معالجة أمر /start"""
+    user = update.effective_user
+    
+    if user.id == ADMIN_ID:
+        # وضع المسؤول
+        await update.message.reply_text(
+            "مرحبا أيها المسؤول!\n"
+            "الرجاء إدخال معرف المجموعة (مثال: -1002329495586):"
+        )
+        return GET_GROUP_ID
     else:
-        keyboard = [[InlineKeyboardButton("إدخال كود", callback_data='enter_code')]]
+        # وضع المستخدم العادي
+        await update.message.reply_text(
+            "مرحبا! الرجاء إدخال الكود الخاص بك:"
+        )
+        return GET_GROUP_ID
 
+async def get_group_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """الحصول على معرف المجموعة من المسؤول"""
+    group_id = update.message.text
+    context.user_data["group_id"] = group_id
+    await update.message.reply_text("كم عدد الأكواد التي تريد توليدها؟")
+    return GET_CODES_COUNT
+
+async def generate_codes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """توليد الأكواد وحفظها"""
+    data = load_data()
+    num_codes = int(update.message.text)
+    group_id = context.user_data["group_id"]
+    
+    # توليد الأكواد
+    codes = [str(uuid4())[:8] for _ in range(num_codes)]
+    
+    # حفظ البيانات
+    data["groups"][group_id] = {"active": True}
+    for code in codes:
+        data["codes"][code] = {
+            "group_id": group_id,
+            "used": False
+        }
+    save_data(data)
+    
+    # إنشاء أزرار للأكواد
+    keyboard = [
+        [InlineKeyboardButton(code, callback_data=f"copy_{code}")]
+        for code in codes
+    ]
     reply_markup = InlineKeyboardMarkup(keyboard)
+    
     await update.message.reply_text(
-        f"مرحبًا! أنا {BOT_USERNAME}. اختر خيارًا من الأزرار أدناه:",
+        f"تم توليد {num_codes} أكواد للمجموعة {group_id}:",
         reply_markup=reply_markup
     )
+    return ConversationHandler.END
 
-# معالجة استجابات الأزرار
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    if query.data == 'generate_codes' and is_admin(query.from_user.id):
-        await query.message.reply_text("أدخل معرف المجموعة (مثال: -1002329495586):")
-        context.user_data['state'] = 'awaiting_group_id'
-    elif query.data == 'show_codes' and is_admin(query.from_user.id):
-        await show_codes(query, context)
-    elif query.data == 'enter_code':
-        await query.message.reply_text("أدخل الكود:")
-        context.user_data['state'] = 'awaiting_code'
-
-# معالجة الرسائل
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text = update.message.text
-    state = context.user_data.get('state')
-
-    if state == 'awaiting_group_id' and is_admin(user_id):
-        if text.startswith('-100'):
-            context.user_data['group_id'] = text
-            context.user_data['state'] = 'awaiting_code_count'
-            await update.message.reply_text("أدخل عدد الأكواد المطلوبة:")
-        else:
-            await update.message.reply_text("معرف المجموعة غير صحيح. يجب أن يبدأ بـ -100. حاول مجددًا:")
-    elif state == 'awaiting_code_count' and is_admin(user_id):
-        try:
-            count = int(text)
-            if count <= 0:
-                raise ValueError
-            await generate_codes(update, context, count)
-        except ValueError:
-            await update.message.reply_text("أدخل رقمًا صحيحًا أكبر من 0:")
-    elif state == 'awaiting_code':
-        await validate_code(update, context, text)
-
-# توليد الأكواد
-async def generate_codes(update: Update, context: ContextTypes.DEFAULT_TYPE, count: int):
-    group_id = context.user_data.get('group_id')
-    conn = sqlite3.connect('/home/ec2-user/projects/WelMemBot/bot.db')
-    c = conn.cursor()
-
-    # إضافة المجموعة إلى قاعدة البيانات إن لم تكن موجودة
-    c.execute("INSERT OR IGNORE INTO groups (group_id) VALUES (?)", (group_id,))
+async def handle_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالجة الأكواد من المستخدمين"""
+    user = update.effective_user
+    code = update.message.text.upper()
+    data = load_data()
     
-    codes = []
-    for _ in range(count):
-        code = generate_code()
-        c.execute("INSERT INTO codes (code, group_id, used) VALUES (?, ?, ?)", (code, group_id, 0))
-        codes.append(code)
-    
-    conn.commit()
-    conn.close()
-
-    codes_text = "\n".join(codes)
-    await update.message.reply_text(f"تم إنشاء {count} أكواد:\n{codes_text}")
-    context.user_data['state'] = None
-
-# عرض الأكواد
-async def show_codes(query: Update, context: ContextTypes.DEFAULT_TYPE):
-    conn = sqlite3.connect('/home/ec2-user/projects/WelMemBot/bot.db')
-    c = conn.cursor()
-    c.execute("SELECT code, group_id, used FROM codes")
-    codes = c.fetchall()
-    conn.close()
-
-    if not codes:
-        await query.message.reply_text("لا توجد أكواد مولدة.")
-        return
-
-    codes_text = "الأكواد المولدة:\n"
-    for code, group_id, used in codes:
-        status = "مستخدم" if used else "غير مستخدم"
-        codes_text += f"كود: {code} | المجموعة: {group_id} | الحالة: {status}\n"
-
-    await query.message.reply_text(codes_text)
-
-# التحقق من الكود وإضافة العضو
-async def validate_code(update: Update, context: ContextTypes.DEFAULT_TYPE, code: str):
-    conn = sqlite3.connect('/home/ec2-user/projects/WelMemBot/bot.db')
-    c = conn.cursor()
-    c.execute("SELECT group_id, used FROM codes WHERE code = ?", (code,))
-    result = c.fetchone()
-
-    if result and not result[1]:
-        group_id, _ = result
-        user_id = update.effective_user.id
-        username = update.effective_user.username or update.effective_user.first_name
-
+    if code in data["codes"] and not data["codes"][code]["used"]:
+        group_id = data["codes"][code]["group_id"]
+        
+        # إضافة المستخدم إلى المجموعة
         try:
-            await context.bot.add_chat_members(group_id, user_id)
-            c.execute("UPDATE codes SET used = 1 WHERE code = ?", (code,))
-            conn.commit()
-
-            welcome_message = (
-                f"Hello and welcome, {username}!\n"
-                "Your membership will automatically expire after one month.\n"
-                "Please adhere to the group rules and avoid leaving before the specified period to prevent membership suspension."
+            await context.bot.add_chat_member(
+                chat_id=group_id,
+                user_id=user.id,
             )
-            await context.bot.send_message(chat_id=group_id, text=welcome_message)
+            # تحديث حالة الكود
+            data["codes"][code]["used"] = True
+            save_data(data)
+            
+            # إرسال رسالة الترحيب
+            welcome_msg = (
+                f"أهلاً وسهلاً بك، {user.full_name}!\n"
+                "سيتم إنهاء عضويتك بعد شهر تلقائيًا.\n"
+                "يُرجى الالتزام بآداب المجموعة وتجنب المغادرة قبل المدة المحددة، لتجنب إيقاف العضوية."
+            )
+            await context.bot.send_message(
+                chat_id=group_id,
+                text=welcome_msg
+            )
             await update.message.reply_text("تمت إضافتك إلى المجموعة بنجاح!")
-        except TelegramError as e:
-            await update.message.reply_text(f"خطأ: {e.message}")
+        except Exception as e:
+            await update.message.reply_text("حدث خطأ أثناء الإضافة إلى المجموعة")
     else:
-        await update.message.reply_text("The entered code is invalid. Please try entering the code correctly.")
-    
-    conn.close()
-    context.user_data['state'] = None
+        await update.message.reply_text("The entered code is incorrect. Please try again.")
 
-# معالجة الأعضاء الجدد
-async def new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    for member in update.message.new_chat_members:
-        username = member.username or member.first_name
-        welcome_message = (
-            f"Hello and welcome, {username}!\n"
-            "Your membership will automatically expire after one month.\n"
-            "Please adhere to the group rules and avoid leaving before the specified period to prevent membership suspension."
-        )
-        await update.message.reply_text(welcome_message)
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """إلغاء المحادثة"""
+    await update.message.reply_text("تم الإلغاء")
+    return ConversationHandler.END
 
-# التشغيل الرئيسي
+async def copy_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """نسخ الكود عند النقر على الزر"""
+    query = update.callback_query
+    code = query.data.split("_")[1]
+    await query.answer(f"تم نسخ الكود: {code}")
+
 def main():
-    init_db()
-    app = Application.builder().token(TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, new_member))
-
-    app.run_polling()
+    """تشغيل البوت"""
+    application = Application.builder().token(TOKEN).build()
+    
+    # محادثة المسؤول
+    admin_conv = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            GET_GROUP_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_group_id)],
+            GET_CODES_COUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, generate_codes)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        allow_reentry=True
+    )
+    
+    # معالجة الأكواد من المستخدمين
+    user_handler = MessageHandler(filters.TEXT & ~filters.COMMAND, handle_code)
+    
+    # معالجة أحداث الأزرار
+    application.add_handler(CallbackQueryHandler(copy_code, pattern="^copy_"))
+    
+    application.add_handler(admin_conv)
+    application.add_handler(user_handler)
+    
+    application.run_polling()
 
 if __name__ == "__main__":
     main()
