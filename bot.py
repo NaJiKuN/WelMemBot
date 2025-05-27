@@ -1,9 +1,11 @@
-# -*- coding: utf-8 -*- m1.1
+# -*- coding: utf-8 -*- m1.2
 import telebot
 import json
 import os
 import uuid
 import time
+import threading
+from datetime import datetime, timedelta
 from telebot import types
 
 # --- إعدادات البوت ---
@@ -47,6 +49,39 @@ if "admin_state" not in data: data["admin_state"] = {}
 save_data(data)
 
 print("Bot started...")
+
+# --- دالة التحقق من انتهاء مدة العضوية ---
+def check_membership_expiry():
+    while True:
+        try:
+            data = load_data()
+            current_time = time.time()
+            one_month = 30 * 24 * 60 * 60  # شهر واحد بالثواني (30 يومًا)
+            for group_id, group_info in data.get("groups", {}).items():
+                group_name = group_info.get('name', f"المجموعة {group_id}")
+                for code, code_details in group_info.get("codes", {}).items():
+                    if code_details.get("status") == "used" and "join_date" in code_details:
+                        join_date = code_details["join_date"]
+                        if current_time - join_date >= one_month:
+                            user_id = code_details.get("user_id", "N/A")
+                            username = code_details.get("username", "N/A")
+                            try:
+                                bot.send_message(
+                                    ADMIN_ID,
+                                    f"⚠️ تنبيه: انتهت مدة عضوية العضو {username} (ID: {user_id}) في المجموعة *{group_name}* (ID: {group_id}) باستخدام الكود `{code}`."
+                                )
+                                print(f"Sent expiry notification for user {user_id} in group {group_id}")
+                            except Exception as e:
+                                print(f"Failed to send expiry notification for user {user_id} in group {group_id}: {e}")
+                            # تحديث حالة الكود للإشارة إلى انتهاء المدة
+                            code_details["status"] = "expired"
+                            save_data(data)
+        except Exception as e:
+            print(f"Error in check_membership_expiry: {e}")
+        time.sleep(24 * 60 * 60)  # التحقق كل 24 ساعة
+
+# --- تشغيل التحقق من انتهاء العضوية في خيط منفصل ---
+threading.Thread(target=check_membership_expiry, daemon=True).start()
 
 # --- وظائف مساعدة للمسؤول ---
 def reset_admin_state(admin_id):
@@ -299,11 +334,12 @@ def display_codes_for_group(admin_id, message_id, group_id_str):
     codes = group_info["codes"]
     new_codes = {code: info for code, info in codes.items() if info["status"] == "new"}
     used_codes = {code: info for code, info in codes.items() if info["status"] == "used"}
+    expired_codes = {code: info for code, info in codes.items() if info["status"] == "expired"}
 
     response_text = f"أكواد *{group_name}* ({group_id_str}):\n\n"
     response_text += f"🟢 *أكواد جديدة ({len(new_codes)}):*\n"
     if new_codes:
-        codes_list = "\n".join([f"`/copy {code}`" for code in new_codes.keys()])
+        codes_list = "\n".join([f"`{code}`" for code in new_codes.keys()])
         response_text += codes_list + "\n"
     else:
         response_text += "_(لا توجد أكواد جديدة)_\n"
@@ -314,6 +350,13 @@ def display_codes_for_group(admin_id, message_id, group_id_str):
         response_text += used_list + "\n"
     else:
         response_text += "_(لا توجد أكواد مستخدمة)_\n"
+
+    response_text += f"\n⚪ *أكواد منتهية ({len(expired_codes)}):*\n"
+    if expired_codes:
+        expired_list = "\n".join([f"`{code}` (بواسطة: {info.get('user_id', 'N/A')} بتاريخ: {info.get('used_time', 'N/A')})" for code, info in expired_codes.items()])
+        response_text += expired_list + "\n"
+    else:
+        response_text += "_(لا توجد أكواد منتهية)_\n"
 
     markup = types.InlineKeyboardMarkup()
     btn_back_to_group = types.InlineKeyboardButton("🔙 العودة لإدارة المجموعة", callback_data=f"admin_manage_group_{group_id_str}")
@@ -416,7 +459,7 @@ def handle_admin_messages(message):
                 bot.send_message(admin_id, f"تم توليد {actual_count} أكواد جديدة فقط لـ *{group_name}* (من أصل {count} مطلوبة) بسبب محاولة تجنب التكرار.")
 
             if actual_count > 0 and actual_count <= 20:
-                codes_text = "\n".join([f"`/copy {code}`" for code in generated_codes])
+                codes_text = "\n".join([f"`{code}`" for code in generated_codes])
                 bot.send_message(admin_id, f"الأكواد الجديدة:\n{codes_text}", parse_mode='Markdown')
             elif actual_count > 20:
                 bot.send_message(admin_id, "يمكنك عرض جميع الأكواد من خيار 'عرض الأكواد الحالية'.")
@@ -486,6 +529,7 @@ def handle_user_code(message):
                 code_details["user_id"] = user_id
                 code_details["username"] = user_info.username or f"{user_info.first_name} {user_info.last_name or ''}".strip()
                 code_details["used_time"] = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
+                code_details["join_date"] = time.time()  # إضافة تاريخ الانضمام
                 save_data(data)
                 print(f"Code {entered_code} validated for user {user_id} for group {target_group_id_str}. Status updated.")
             else:
